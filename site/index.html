@@ -81,6 +81,27 @@
   .term-body .o .k { color: var(--fg); }
   .term-body .c { color: var(--ghost); }
 
+  /* browser UI mock — the actual chrome, monochrome */
+  .ui { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0b0b0b; box-shadow: 0 24px 70px -34px #000; }
+  .ui-bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; color: var(--faint); }
+  .ui-logo { width: 16px; height: 16px; filter: grayscale(1); opacity: 0.85; }
+  .ui-nav { color: var(--dim); font-size: 15px; line-height: 1; }
+  .ui-nav.dis { color: var(--ghost); }
+  .ui-url { flex: 1; height: 24px; border: 1px solid var(--line); border-radius: 6px; background: #121212; display: flex; align-items: center; gap: 8px; padding: 0 11px; color: var(--dim); }
+  .ui-lock { font-size: 8px; color: var(--faint); }
+  .ui-act { width: 15px; height: 15px; border-radius: 4px; background: #1a1a1a; }
+  .ui-win { color: var(--ghost); font-size: 11px; margin-left: 2px; }
+  .ui-body { display: grid; grid-template-columns: 46px 1fr; min-height: 250px; }
+  .ui-side { border-right: 1px solid var(--line); padding: 12px 0; display: flex; flex-direction: column; align-items: center; gap: 11px; background: #090909; }
+  .ui-tab, .ui-fold { width: 22px; height: 22px; border-radius: 6px; background: #171717; }
+  .ui-tab.on { background: #262626; box-shadow: inset 2px 0 0 #e6e6e6; }
+  .ui-fold { border-radius: 5px; }
+  .ui-page { padding: 30px 34px; }
+  .ui-hero { height: 46px; width: 46px; border-radius: 12px; background: #161616; margin-bottom: 22px; }
+  .ui-l { height: 11px; border-radius: 4px; background: #151515; margin-bottom: 13px; }
+  .ui-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 24px; }
+  .ui-grid i { height: 62px; border-radius: 8px; background: #121212; border: 1px solid var(--line); display: block; }
+
   /* stats strip */
   .stats { margin-top: 34px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .stat { padding: 20px 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -139,9 +160,38 @@
 <span class="k">telemetry</span>  none</div>
         <div class="p"><span class="cmd">wc -l src/**</span></div>
         <div class="o">7982 rust  ·  7662 typescript  ·  22 modules</div>
-        <div class="p"><span class="cmd">du -h installer</span></div>
-        <div class="o">4.4M  zro_0.1.0_x64-setup.exe</div>
+        <div class="p"><span class="cmd">du -h</span></div>
+        <div class="o"><span class="k">4.4M</span>  installer (lzma)
+<span class="k"> 16M</span>  zro.exe on disk
+<span class="k">   0</span>  bundled chromium — uses system webview2</div>
         <div class="p"><span class="cmd">_</span></div>
+      </div>
+    </div>
+
+    <div class="ui" aria-label="zro window">
+      <div class="ui-bar">
+        <img src="logo.png" alt="" class="ui-logo" />
+        <span class="ui-nav">‹</span><span class="ui-nav dis">›</span><span class="ui-nav">⟳</span>
+        <span class="ui-url"><span class="ui-lock">▲</span> github.com/ThatQne/zro</span>
+        <span class="ui-act"></span><span class="ui-act"></span>
+        <span class="ui-win">—</span><span class="ui-win">▢</span><span class="ui-win">✕</span>
+      </div>
+      <div class="ui-body">
+        <div class="ui-side">
+          <span class="ui-tab on"></span>
+          <span class="ui-fold" style="background:#3a3a3a"></span>
+          <span class="ui-tab"></span>
+          <span class="ui-tab"></span>
+          <span class="ui-fold" style="background:#2a2a2a"></span>
+          <span class="ui-tab"></span>
+        </div>
+        <div class="ui-page">
+          <div class="ui-hero"></div>
+          <div class="ui-l" style="width:52%"></div>
+          <div class="ui-l" style="width:80%"></div>
+          <div class="ui-l" style="width:68%"></div>
+          <div class="ui-grid"><i></i><i></i><i></i></div>
+        </div>
       </div>
     </div>
 
@@ -165,7 +215,8 @@
       <div class="row"><div class="k">ai agent</div><div class="v">Ollama / OpenAI-compatible / local CLI. Tool loop over read_page, click, fill, navigate, history — with a persistent embeddings memory.</div></div>
       <div class="row"><div class="k">privacy</div><div class="v">Incognito with a Windows Hello lock, a built-in cookie editor, a local password viewer. <span>Nothing leaves the machine.</span></div></div>
       <div class="row"><div class="k">updates</div><div class="v">Signed builds delivered in-app from GitHub Releases. One click, no reinstall — verified against a minisign key before install.</div></div>
-      <div class="row"><div class="k">stack</div><div class="v">Rust · Tauri v2 · React · TypeScript. <span>MIT licensed.</span> ~4.4 MB installed, not a 200 MB Electron bundle.</div></div>
+      <div class="row"><div class="k">footprint</div><div class="v">4.4 MB installer, ~16 MB on disk. Renders through the system WebView2 runtime — <span>no bundled Chromium</span>, not a 200 MB Electron download.</div></div>
+      <div class="row"><div class="k">stack</div><div class="v">Rust · Tauri v2 · React · TypeScript. <span>MIT licensed, developed in the open.</span></div></div>
     </div>
   </div>
 </section>
