@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronLeft, ChevronRight, RotateCw, Settings as SettingsIcon,
-  Bot, BarChart2, EyeOff, Clock, Download, Minus, Square, X, Shield,
+  Bot, BarChart2, EyeOff, Clock, Download, Minus, Square, X, Shield, Network,
 } from "lucide-react";
 import { Puzzle } from "lucide-react";
 import { useBrowserStore, activeFolderId } from "./store/tabs";
@@ -21,12 +21,13 @@ import ShieldPanel from "./components/ShieldPanel";
 import DownloadsPanel from "./components/DownloadsPanel";
 import IncognitoLock from "./components/IncognitoLock";
 import UpdateBanner from "./components/UpdateBanner";
+import MemoryPanel from "./components/MemoryPanel";
 import logo from "../logo.png";
 
 const CORNER_INSET = 12; // keep webview away from rounded window corners
 const BAR_H = 40;        // single top row height
 
-export type PanelKind = "stats" | "ai" | "history" | "settings" | "downloads" | "shield";
+export type PanelKind = "stats" | "ai" | "history" | "settings" | "downloads" | "shield" | "memory";
 
 // Module-level: survives StrictMode unmount/remount cycles
 let bootDone = false;
@@ -105,6 +106,7 @@ export default function App() {
       case "reload":
       case "hard-reload": s.reload(); break;
       case "history": setPanel((p) => (p === "history" ? null : "history")); break;
+      case "memory": setPanel((p) => (p === "memory" ? null : "memory")); break;
       case "downloads": setPanel((p) => (p === "downloads" ? null : "downloads")); break;
       case "settings": setPanel((p) => (p === "settings" ? null : "settings")); break;
       case "focus-url":
@@ -134,6 +136,7 @@ export default function App() {
       if (k === "n" && !e.shiftKey) return "new-tab";
       if (k === "w") return "close-tab";
       if (k === "h") return "history";
+      if (k === "m" && !e.shiftKey) return "memory";
       if (k === "j") return "downloads";
       if (k === ",") return "settings";
       if (k === "l" || k === "e") return "focus-url";
@@ -340,6 +343,12 @@ export default function App() {
             activeColor="rgba(150,80,220,0.6)"
           />
           <NavBtn
+            icon={<Network size={13} />}
+            onClick={() => togglePanel("memory")}
+            title="Memory (Ctrl+M)"
+            active={panel === "memory"}
+          />
+          <NavBtn
             icon={<Clock size={13} />}
             onClick={() => togglePanel("history")}
             title="History (Ctrl+H)"
@@ -412,6 +421,7 @@ export default function App() {
               {panel === "stats" && <StatsPanel onClose={() => setPanel(null)} />}
               {panel === "ai" && <AiPanel onClose={() => setPanel(null)} />}
               {panel === "history" && <HistoryPanel onClose={() => setPanel(null)} />}
+              {panel === "memory" && <MemoryPanel onClose={() => setPanel(null)} />}
               {panel === "settings" && <SettingsPanel onClose={() => setPanel(null)} />}
               {panel === "shield" && <ShieldPanel onClose={() => setPanel(null)} />}
               {panel === "downloads" && <DownloadsPanel onClose={() => setPanel(null)} />}

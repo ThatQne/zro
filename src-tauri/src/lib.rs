@@ -38,6 +38,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(BrowserState::default()))
         .manage(Mutex::new(SemanticMemory::default()))
+        .manage(Mutex::new(browser::memory::MemGraph::default()))
         .manage(AiCancel::default())
         .manage(browser::Downloads::default())
         .invoke_handler(tauri::generate_handler![
@@ -96,6 +97,14 @@ pub fn run() {
             browser::set_extension_enabled,
             browser::get_extension_icon,
             browser::open_extension_popup,
+            browser::mem_list,
+            browser::mem_add,
+            browser::mem_update,
+            browser::mem_delete,
+            browser::mem_link,
+            browser::mem_unlink,
+            browser::mem_search,
+            browser::mem_ingest_visit,
             agent::check_ollama,
             agent::check_mzcode,
             agent::list_ollama_models,

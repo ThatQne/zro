@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
+import { ingestVisit } from "./memory";
 
 export interface Tab {
   id: string;
@@ -709,7 +710,10 @@ export const useBrowserStore = create<BrowserStore>()(
           },
         }));
       },
-      addHistory: (entry) =>
+      addHistory: (entry) => {
+        // Mirror the visit into graph memory (deduped + embedded server-side).
+        // Gated by the same incognito check as history, upstream in the caller.
+        ingestVisit(entry.url, entry.title);
         set((s) => {
           // Dedupe: refreshes / redirect hops / SPA re-fires of the same URL
           // within 5 minutes update the existing entry instead of stacking
@@ -718,7 +722,8 @@ export const useBrowserStore = create<BrowserStore>()(
             .slice(0, 50)
             .filter((h) => !(h.url === entry.url && h.visitedAt > cutoff));
           return { history: [entry, ...recent, ...s.history.slice(50)].slice(0, 5000) };
-        }),
+        });
+      },
       removeHistory: (visitedAt, url) =>
         set((s) => ({
           history: s.history.filter((h) => !(h.visitedAt === visitedAt && h.url === url)),
