@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>zro — minimalist browser</title>
+<meta name="description" content="A fast, lightweight, open-source minimalist browser for Windows. Native Rust + WebView2, built-in ad shields, AI agent. 4.4 MB installer." />
+<meta property="og:title" content="zro" />
+<meta property="og:description" content="A fast, lightweight, open-source minimalist browser for Windows." />
+<link rel="icon" href="favicon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #090909;
+    --panel: #0e0e0e;
+    --line: rgba(255,255,255,0.09);
+    --fg: #e6e6e6;
+    --dim: #8a8a8a;
+    --faint: #555;
+    --ghost: #2e2e2e;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: "Outfit", -apple-system, system-ui, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-weight: 300;
+    -webkit-font-smoothing: antialiased;
+    /* faint grid, like a terminal canvas */
+    background-image:
+      linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+    background-size: 34px 34px;
+  }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+  .mono { font-family: var(--mono); }
+  ::selection { background: #e6e6e6; color: #090909; }
+
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    max-width: 860px; margin: 0 auto; padding: 12px 20px;
+    font-family: var(--mono); font-size: 13px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(9,9,9,0.85); backdrop-filter: blur(8px);
+  }
+  nav .b { display: flex; align-items: center; gap: 8px; color: var(--fg); font-weight: 500; }
+  nav .b img { width: 18px; height: 18px; opacity: 0.9; filter: grayscale(1); }
+  nav .links { display: flex; gap: 18px; color: var(--faint); }
+  nav .links a:hover { color: var(--fg); }
+
+  header { padding: 60px 0 30px; }
+  .kicker { font-family: var(--mono); font-size: 12px; color: var(--faint); letter-spacing: 0.02em; }
+  .kicker b { color: var(--dim); font-weight: 500; }
+  h1 { font-size: clamp(40px, 8vw, 72px); font-weight: 600; letter-spacing: -0.04em; line-height: 0.98; margin: 14px 0 0; }
+  h1 .cur { display: inline-block; width: 0.5ch; height: 0.82em; background: var(--fg); margin-left: 4px; transform: translateY(0.08em); animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .lede { margin-top: 18px; max-width: 520px; color: var(--dim); font-size: 17px; font-weight: 300; }
+  .lede b { color: var(--fg); font-weight: 500; }
+
+  .cta { margin-top: 26px; display: flex; gap: 10px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border: 1px solid var(--line); border-radius: 7px; transition: background .15s, border-color .15s; }
+  .btn.solid { background: #ededed; color: #090909; border-color: #ededed; font-weight: 500; }
+  .btn.solid:hover { background: #fff; }
+  .btn.wire:hover { background: #141414; border-color: rgba(255,255,255,0.2); }
+
+  /* terminal window */
+  .term { margin-top: 40px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); box-shadow: 0 24px 70px -34px #000; }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 9px 13px; border-bottom: 1px solid var(--line); background: #0b0b0b; }
+  .term-bar .d { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--ghost); }
+  .term-bar .t { margin-left: 8px; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .term-body { padding: 18px 18px 22px; font-family: var(--mono); font-size: 13px; line-height: 1.85; }
+  .term-body .p { color: var(--faint); }
+  .term-body .p::before { content: "$ "; color: var(--dim); }
+  .term-body .cmd { color: var(--fg); }
+  .term-body .o { color: var(--dim); white-space: pre-wrap; }
+  .term-body .o .k { color: var(--fg); }
+  .term-body .c { color: var(--ghost); }
+
+  /* stats strip */
+  .stats { margin-top: 34px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .stat { padding: 20px 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .stat .n { font-family: var(--mono); font-size: 26px; font-weight: 500; letter-spacing: -0.02em; }
+  .stat .l { margin-top: 4px; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+  section { padding: 52px 0; }
+  .sh { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+  .sh::before { content: "// "; }
+
+  /* spec list — show, don't tell */
+  .spec { margin-top: 22px; border-top: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 150px 1fr; gap: 18px; padding: 16px 4px; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .row .k { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+  .row .v { font-size: 15px; color: var(--fg); font-weight: 300; }
+  .row .v span { color: var(--faint); }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; gap: 4px; } }
+
+  footer { border-top: 1px solid var(--line); padding: 26px 0 40px; font-family: var(--mono); font-size: 12px; color: var(--faint); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  footer a:hover { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="b" href="#top"><img src="logo.png" alt="" /> zro</a>
+  <div class="links">
+    <a href="#specs">specs</a>
+    <a href="https://github.com/ThatQne/zro">source</a>
+    <a href="https://github.com/ThatQne/zro/releases/latest">download</a>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="wrap">
+    <div class="kicker">~/browsers <b>zro</b> · v0.1.0 · windows</div>
+    <h1>zro<span class="cur"></span></h1>
+    <p class="lede">A <b>minimalist</b> browser for Windows. Native Rust shell over WebView2 — <b>no bundled Chromium</b>, no telemetry, no bloat.</p>
+    <div class="cta">
+      <a class="btn solid" href="https://github.com/ThatQne/zro/releases/latest">↓ download · 4.4&nbsp;MB</a>
+      <a class="btn wire" href="https://github.com/ThatQne/zro">git clone</a>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="d"></span><span class="d"></span><span class="d"></span>
+        <span class="t">zro — pwsh</span>
+      </div>
+      <div class="term-body">
+        <div class="p"><span class="cmd">zro --stats</span></div>
+        <div class="o"><span class="k">renderer</span>   WebView2 (Chromium), UI-on-top compositing
+<span class="k">chrome</span>     40px · one row · hover sidebar
+<span class="k">memory</span>     flat — inactive tabs freeze, then sleep
+<span class="k">shields</span>    Brave adblock engine · https upgrade · param strip
+<span class="k">agent</span>      reads page · clicks · fills · local semantic memory
+<span class="k">telemetry</span>  none</div>
+        <div class="p"><span class="cmd">wc -l src/**</span></div>
+        <div class="o">7982 rust  ·  7662 typescript  ·  22 modules</div>
+        <div class="p"><span class="cmd">du -h installer</span></div>
+        <div class="o">4.4M  zro_0.1.0_x64-setup.exe</div>
+        <div class="p"><span class="cmd">_</span></div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="n">4.4 MB</div><div class="l">installer</div></div>
+      <div class="stat"><div class="n">15.6k</div><div class="l">lines of code</div></div>
+      <div class="stat"><div class="n">40px</div><div class="l">of chrome</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">trackers</div></div>
+      <div class="stat"><div class="n">100%</div><div class="l">open source</div></div>
+    </div>
+  </div>
+</header>
+
+<section id="specs">
+  <div class="wrap">
+    <div class="sh">what's actually in it</div>
+    <div class="spec">
+      <div class="row"><div class="k">rendering</div><div class="v">Per-tab WebView2 renderers. UI overlays composite <span>over</span> the page via a live GDI region — panels never shift the viewport, rounded corners on every site.</div></div>
+      <div class="row"><div class="k">memory</div><div class="v">Inactive tabs freeze after a minute, then fully sleep. RAM stays flat <span>at hundreds of tabs</span>; the whole app freezes when the machine goes idle.</div></div>
+      <div class="row"><div class="k">shields</div><div class="v">Brave's native adblock engine compiled in. Blocks ads + trackers, upgrades HTTP→HTTPS, strips tracking params. Pauses on tabs playing audio.</div></div>
+      <div class="row"><div class="k">ai agent</div><div class="v">Ollama / OpenAI-compatible / local CLI. Tool loop over read_page, click, fill, navigate, history — with a persistent embeddings memory.</div></div>
+      <div class="row"><div class="k">privacy</div><div class="v">Incognito with a Windows Hello lock, a built-in cookie editor, a local password viewer. <span>Nothing leaves the machine.</span></div></div>
+      <div class="row"><div class="k">updates</div><div class="v">Signed builds delivered in-app from GitHub Releases. One click, no reinstall — verified against a minisign key before install.</div></div>
+      <div class="row"><div class="k">stack</div><div class="v">Rust · Tauri v2 · React · TypeScript. <span>MIT licensed.</span> ~4.4 MB installed, not a 200 MB Electron bundle.</div></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="display:flex;justify-content:space-between;width:100%;flex-wrap:wrap;gap:10px;padding:0 20px">
+    <span>zro · MIT</span>
+    <span><a href="https://github.com/ThatQne/zro">github.com/ThatQne/zro</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

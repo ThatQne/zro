@@ -1,0 +1,52 @@
+name: release
+
+# Push a version tag (e.g. `git tag v0.1.1 && git push --tags`) to build a
+# signed Windows installer, publish a GitHub Release, and generate the
+# `latest.json` the in-app auto-updater reads.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build + publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # minisign private key used to sign the updater bundle. Add it as a
+          # repo secret (Settings ▸ Secrets ▸ Actions). Empty password key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "zro ${{ github.ref_name }}"
+          releaseBody: "Download the `.exe` installer below. Existing installs update automatically."
+          releaseDraft: false
+          prerelease: false
