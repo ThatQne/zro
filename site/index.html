@@ -341,6 +341,9 @@
     flex-wrap: wrap; gap: 8px 16px;
   }
   footer a:hover { color: var(--fg); }
+  footer .footlinks { display: flex; gap: 16px; }
+  footer .footlinks a::before { content: "· "; color: var(--faint); }
+  footer .footlinks a:first-child::before { content: ""; }
 
   @media (max-width: 600px) {
     .hero { min-height: 44vh; }
@@ -363,7 +366,7 @@
     using top of the line research. open source and community driven.
   </div>
   <div class="sub">
-    <span>windows</span><span>4.4&nbsp;mb installer</span><span>webview2 core</span><span>rust · tauri</span><span>mit</span>
+    <span>windows</span><span>4.4&nbsp;mb installer</span><span>webview2 core</span><span>rust · tauri</span><span>agpl-3.0</span>
   </div>
 </header>
 
@@ -477,8 +480,11 @@
 </main>
 
 <footer>
-  <span>zro · mit · rust · tauri · react</span>
-  <a href="https://github.com/ThatQne/zro">github.com/ThatQne/zro</a>
+  <span>zro · agpl-3.0 + commercial · rust · tauri · react</span>
+  <span class="footlinks">
+    <a href="https://www.buymeacoffee.com/thatqne">buy me a coffee</a>
+    <a href="https://github.com/ThatQne/zro">github</a>
+  </span>
 </footer>
 
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
@@ -736,7 +742,7 @@ paintIcons();
       var a = nodes[i];
       for (var j = i + 1; j < nodes.length; j++) {
         var b = nodes[j], dx = a.x - b.x, dy = a.y - b.y;
-        var d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2), f = 850 / d2;
+        var d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2), f = Math.min(850 / d2, 28);
         a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f;
       }
       a.vx += (W / 2 - a.x) * 0.0015; a.vy += (H / 2 - a.y) * 0.0015;
@@ -748,7 +754,11 @@ paintIcons();
     });
     nodes.forEach(function (n, i) {
       if (drag && drag.i === i) { n.vx = n.vy = 0; return; }
-      n.vx *= 0.86; n.vy *= 0.86;
+      n.vx *= 0.85; n.vy *= 0.85;
+      // clamp speed so a fast drag can't fling neighbours across the canvas
+      var sp = Math.sqrt(n.vx * n.vx + n.vy * n.vy), MAXV = 6;
+      if (sp > MAXV) { n.vx = n.vx / sp * MAXV; n.vy = n.vy / sp * MAXV; }
+      n.x += n.vx; n.y += n.vy;   // integrate — was missing, graph was static
       var r = RAD[n.kind] + 4;
       n.x = Math.max(r + 6, Math.min(W - r - 6, n.x));
       n.y = Math.max(r + 10, Math.min(H - r - 14, n.y));
