@@ -3,7 +3,6 @@ import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
-import { ingestVisit } from "./memory";
 
 export interface Tab {
   id: string;
@@ -102,7 +101,14 @@ export interface Settings {
   shieldsHttps: boolean;
   /** Pillar 4: strip tracking params (utm_*, fbclid, gclid…) off URLs. */
   shieldsStrip: boolean;
+  /** Toolbar tools kept visible in the top bar; the rest fold into a "⋯"
+   *  overflow menu. Settings is always shown regardless. */
+  pinnedTools: string[];
 }
+
+/** Every toolbar tool that can be pinned/overflowed (settings excluded — it's
+ *  always pinned). Order here is the render order in the bar. */
+export const TOOL_KEYS = ["shield", "incognito", "memory", "history", "downloads", "stats", "ai"] as const;
 
 const DEFAULT_SETTINGS: Settings = {
   searchEngine: "google",
@@ -124,6 +130,8 @@ const DEFAULT_SETTINGS: Settings = {
   shieldsFingerprint: true,
   shieldsHttps: true,
   shieldsStrip: true,
+  // Default: all pinned (no change from before) — users curate down from here.
+  pinnedTools: ["shield", "incognito", "memory", "history", "downloads", "stats", "ai"],
 };
 
 /** Small non-cryptographic hash so the passcode isn't stored in plaintext.
@@ -193,6 +201,11 @@ const SEARCH_URLS: Record<Settings["searchEngine"], string> = {
   duckduckgo: "https://duckduckgo.com/?q=",
   bing: "https://www.bing.com/search?q=",
 };
+
+/** Build a search URL for the given engine (falls back to Google). */
+export function searchUrl(query: string, engine: Settings["searchEngine"]): string {
+  return (SEARCH_URLS[engine] ?? SEARCH_URLS.google) + encodeURIComponent(query);
+}
 
 /** Log to devtools AND the dev terminal (native layout bugs need both sides). */
 function logErr(ctx: string, err: unknown) {
@@ -710,10 +723,7 @@ export const useBrowserStore = create<BrowserStore>()(
           },
         }));
       },
-      addHistory: (entry) => {
-        // Mirror the visit into graph memory (deduped + embedded server-side).
-        // Gated by the same incognito check as history, upstream in the caller.
-        ingestVisit(entry.url, entry.title);
+      addHistory: (entry) =>
         set((s) => {
           // Dedupe: refreshes / redirect hops / SPA re-fires of the same URL
           // within 5 minutes update the existing entry instead of stacking
@@ -722,8 +732,7 @@ export const useBrowserStore = create<BrowserStore>()(
             .slice(0, 50)
             .filter((h) => !(h.url === entry.url && h.visitedAt > cutoff));
           return { history: [entry, ...recent, ...s.history.slice(50)].slice(0, 5000) };
-        });
-      },
+        }),
       removeHistory: (visitedAt, url) =>
         set((s) => ({
           history: s.history.filter((h) => !(h.visitedAt === visitedAt && h.url === url)),

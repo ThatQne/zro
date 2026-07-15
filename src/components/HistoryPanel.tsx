@@ -5,6 +5,7 @@ import {
   ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { useBrowserStore, HistoryEntry } from "../store/tabs";
+import { ClearDataSection } from "./SettingsPanel";
 
 interface Props {
   onClose: () => void;
@@ -237,6 +238,12 @@ export default function HistoryPanel({ onClose }: Props) {
           </div>
         </>
       )}
+
+      {/* Cookies / cache / site-data clearing lives here now (moved out of
+          Settings › Privacy), alongside history clearing. */}
+      <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "10px 12px", flexShrink: 0 }}>
+        <ClearDataSection />
+      </div>
 
       <style>{`.history-row:hover .history-remove { opacity: 1 !important; }`}</style>
     </motion.div>

@@ -76,5 +76,12 @@ input {
   font: inherit;
 }
 
+/* Memory rows: show the action toolbar on hover, badges otherwise. Driven by
+   CSS :hover (not JS mouseenter) so that after a delete shifts the list, the
+   row now under a stationary cursor still reveals its actions. */
+.mem-row .mem-actions { display: none; }
+.mem-row:hover .mem-actions { display: flex; }
+.mem-row:hover .mem-badges { display: none !important; }
+
 /* Tab/folder context menus are native OS popups (see show_tab_menu in Rust) —
    DOM menus can't render above the native child webviews. */

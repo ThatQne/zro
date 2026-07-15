@@ -206,7 +206,22 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
             let info = {
                 let mut items = dls.items.lock().unwrap();
                 let url_s = url.to_string();
-                items.iter_mut().find(|i| i.state == "active" && i.url == url_s).map(|item| {
+                // Match by URL first; a redirected download (link → CDN) reports
+                // a different final URL, so fall back to the most-recently
+                // started still-active item instead of leaving it stuck "active".
+                let pos = items
+                    .iter()
+                    .position(|i| i.state == "active" && i.url == url_s)
+                    .or_else(|| {
+                        items
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, i)| i.state == "active")
+                            .max_by_key(|(_, i)| i.started_at)
+                            .map(|(idx, _)| idx)
+                    });
+                pos.map(|idx| {
+                    let item = &mut items[idx];
                     item.state = if success { "done" } else { "failed" }.into();
                     if let Some(p) = &path {
                         item.path = p.to_string_lossy().to_string();
@@ -255,6 +270,28 @@ pub async fn download_crx(app: AppHandle, ext_id: String) -> Result<(), String> 
 
     fetch_crx(app.clone(), id, url, path).await;
     Ok(())
+}
+
+/// Register an already-written file as a completed download so it shows up in
+/// the panel. Used by flows that save directly (e.g. "Save Image As") rather
+/// than going through WebView2's download pipeline.
+pub fn record_completed(app: &AppHandle, url: String, path: &std::path::Path) {
+    let dls = app.state::<Downloads>();
+    let id = dls.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let info = DownloadInfo {
+        id,
+        url,
+        path: path.to_string_lossy().to_string(),
+        filename: path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "download".into()),
+        state: "done".into(),
+        started_at: epoch_ms(),
+        reason: None,
+    };
+    dls.items.lock().unwrap().insert(0, info.clone());
+    let _ = app.emit("download-event", serde_json::json!({ "kind": "started", "item": info }));
 }
 
 #[tauri::command]

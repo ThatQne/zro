@@ -43,15 +43,18 @@ export interface AddInput {
 interface MemState {
   nodes: MemNode[];
   edges: MemEdge[];
+  trash: MemNode[]; // session-only undo buffer for deleted nodes
   loaded: boolean;
   busy: boolean;
   load: () => Promise<void>;
   add: (input: AddInput) => Promise<MemNode | null>;
   update: (id: string, patch: Partial<Pick<MemNode, "title" | "body" | "done" | "pinned" | "tags">>) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  recover: (id: string) => Promise<void>;
   link: (a: string, b: string) => Promise<void>;
   unlink: (a: string, b: string) => Promise<void>;
   search: (q: string) => Promise<{ id: string; score: number }[]>;
+  refresh: () => Promise<void>;
 }
 
 async function refetch(): Promise<{ nodes: MemNode[]; edges: MemEdge[] }> {
@@ -62,6 +65,7 @@ async function refetch(): Promise<{ nodes: MemNode[]; edges: MemEdge[] }> {
 export const useMemoryStore = create<MemState>((set, get) => ({
   nodes: [],
   edges: [],
+  trash: [],
   loaded: false,
   busy: false,
 
@@ -75,8 +79,9 @@ export const useMemoryStore = create<MemState>((set, get) => ({
   },
 
   add: async (input) => {
-    set({ busy: true });
     try {
+      // Backend returns instantly (no embedding on the hot path); it embeds +
+      // auto-links in the background and fires `zro:mem-changed` when edges land.
       const node = await invoke<MemNode>("mem_add", {
         kind: input.kind,
         title: input.title,
@@ -84,14 +89,19 @@ export const useMemoryStore = create<MemState>((set, get) => ({
         url: input.url ?? null,
         image: input.image ?? null,
       });
-      // Auto-link may have created edges — pull the fresh graph.
-      const g = await refetch();
-      set({ nodes: g.nodes, edges: g.edges, busy: false });
+      // Optimistic insert — no refetch round-trip.
+      set((s) => ({ nodes: [node, ...s.nodes] }));
       return node;
     } catch {
-      set({ busy: false });
       return null;
     }
+  },
+
+  refresh: async () => {
+    try {
+      const g = await refetch();
+      set({ nodes: g.nodes, edges: g.edges });
+    } catch { /* keep current */ }
   },
 
   update: async (id, patch) => {
@@ -108,11 +118,22 @@ export const useMemoryStore = create<MemState>((set, get) => ({
   },
 
   remove: async (id) => {
+    // Keep a copy in the session trash so a delete can be undone. The backend
+    // delete is real; recovery re-adds the node (fresh id, auto re-links).
+    const node = get().nodes.find((n) => n.id === id) || null;
     await invoke("mem_delete", { id }).catch(() => {});
     set((s) => ({
       nodes: s.nodes.filter((n) => n.id !== id),
       edges: s.edges.filter((e) => e.a !== id && e.b !== id),
+      trash: node ? [node, ...s.trash].slice(0, 12) : s.trash,
     }));
+  },
+
+  recover: async (id) => {
+    const node = get().trash.find((n) => n.id === id);
+    if (!node) return;
+    set((s) => ({ trash: s.trash.filter((n) => n.id !== id) }));
+    await get().add({ kind: node.kind, title: node.title, body: node.body, url: node.url, image: node.image });
   },
 
   link: async (a, b) => {
@@ -135,9 +156,3 @@ export const useMemoryStore = create<MemState>((set, get) => ({
     }
   },
 }));
-
-/** Fire-and-forget: record a visited page as a graph node (deduped by URL). */
-export function ingestVisit(url: string, title: string) {
-  if (!url || url.startsWith("about:") || url.startsWith("zro:")) return;
-  invoke("mem_ingest_visit", { url, title }).catch(() => {});
-}

@@ -14,6 +14,48 @@ pub struct FolderLite {
     pub name: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ToolLite {
+    pub key: String,
+    pub label: String,
+}
+
+/// Overflow menu for the toolbar tools the user hasn't pinned. Each unpinned
+/// tool is a submenu: open it now, or pin it back to the bar. Selections come
+/// back as `tool:open:<key>` / `tool:pin:<key>` through on_menu_event.
+#[tauri::command]
+pub async fn show_tools_menu(app: AppHandle, tools: Vec<ToolLite>) -> Result<(), String> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let mut menu = MenuBuilder::new(&app);
+    for t in &tools {
+        let sub = SubmenuBuilder::new(&app, &t.label)
+            .item(&MenuItemBuilder::with_id(format!("tool:open:{}", t.key), "Open").build(&app).map_err(|e| e.to_string())?)
+            .item(&MenuItemBuilder::with_id(format!("tool:pin:{}", t.key), "Pin to Toolbar").build(&app).map_err(|e| e.to_string())?)
+            .build().map_err(|e| e.to_string())?;
+        menu = menu.item(&sub);
+    }
+    let menu = menu.build().map_err(|e| e.to_string())?;
+    let window = app.get_window("main").ok_or("no main window")?;
+    window.popup_menu(&menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Right-click on a pinned toolbar tool → unpin it into the overflow.
+/// Selection comes back as `tool:unpin:<key>`.
+#[tauri::command]
+pub async fn show_tool_menu(app: AppHandle, key: String, label: String) -> Result<(), String> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+
+    let menu = MenuBuilder::new(&app)
+        .item(&MenuItemBuilder::with_id(format!("tool:unpin:{key}"), format!("Unpin {label} from Toolbar")).build(&app).map_err(|e| e.to_string())?)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let window = app.get_window("main").ok_or("no main window")?;
+    window.popup_menu(&menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn show_tab_menu(
     app: AppHandle,
@@ -108,6 +150,137 @@ pub async fn show_extension_menu(
     let window = app.get_window("main").ok_or("no main window")?;
     window.popup_menu(&menu).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Web-content right-click menu. Built from `page_menu_ctx` (captured by the
+/// ContextMenuRequested handler in tabs.rs) and popped at the cursor. Items are
+/// context-dependent; selections come back via on_menu_event as `page:*` and
+/// are performed on the frontend (see the ctx-action listener).
+pub fn show_page_menu_now(app: &AppHandle) {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let ctx = {
+        let state = app.state::<Mutex<BrowserState>>();
+        let s = state.lock().unwrap();
+        s.page_menu_ctx.clone()
+    };
+
+    let build = || -> Result<(), tauri::Error> {
+        let mut menu = MenuBuilder::new(app);
+
+        if !ctx.link.is_empty() {
+            menu = menu
+                .item(&MenuItemBuilder::with_id("page:open-link", "Open Link in New Tab").build(app)?)
+                .item(&MenuItemBuilder::with_id("page:copy-link", "Copy Link Address").build(app)?)
+                .separator();
+        }
+
+        if ctx.is_image && !ctx.src.is_empty() {
+            let save_sub = SubmenuBuilder::new(app, "Save Image As")
+                .item(&MenuItemBuilder::with_id("page:save-image:png", "PNG").build(app)?)
+                .item(&MenuItemBuilder::with_id("page:save-image:jpeg", "JPEG").build(app)?)
+                .item(&MenuItemBuilder::with_id("page:save-image:webp", "WebP").build(app)?)
+                .build()?;
+            menu = menu
+                .item(&MenuItemBuilder::with_id("page:open-image", "Open Image in New Tab").build(app)?)
+                .item(&save_sub)
+                .item(&MenuItemBuilder::with_id("page:copy-image", "Copy Image Address").build(app)?)
+                .separator();
+        }
+
+        if !ctx.selection.trim().is_empty() {
+            let sel = ctx.selection.trim();
+            let short: String = sel.chars().take(24).collect();
+            let label = if sel.chars().count() > 24 {
+                format!("Search for \"{short}…\"")
+            } else {
+                format!("Search for \"{short}\"")
+            };
+            menu = menu
+                .item(&MenuItemBuilder::with_id("page:copy", "Copy").build(app)?)
+                .item(&MenuItemBuilder::with_id("page:search", label).build(app)?)
+                .separator();
+        }
+
+        menu = menu
+            .item(&MenuItemBuilder::with_id("page:back", "Back").build(app)?)
+            .item(&MenuItemBuilder::with_id("page:forward", "Forward").build(app)?)
+            .item(&MenuItemBuilder::with_id("page:reload", "Reload").build(app)?)
+            .separator()
+            .item(&MenuItemBuilder::with_id("page:copy-url", "Copy Page URL").build(app)?);
+
+        let menu = menu.build()?;
+        if let Some(window) = app.get_window("main") {
+            window.popup_menu(&menu)?;
+        }
+        Ok(())
+    };
+
+    if let Err(e) = build() {
+        eprintln!("[page-menu] {e}");
+    }
+}
+
+/// Fetch an image, decode whatever the site served (webp, avif via the codecs
+/// enabled in Cargo.toml, …) and re-encode it to the format the user picked,
+/// then write it via a native Save-As dialog. This is the fix for sites that
+/// only serve webp — the user gets a real PNG/JPEG on disk.
+#[tauri::command]
+pub async fn save_image_as(app: AppHandle, url: String, format: String) -> Result<String, String> {
+    use image::ImageFormat;
+
+    let (fmt, ext) = match format.as_str() {
+        "png" => (ImageFormat::Png, "png"),
+        "jpeg" | "jpg" => (ImageFormat::Jpeg, "jpg"),
+        "webp" => (ImageFormat::WebP, "webp"),
+        other => return Err(format!("unsupported format: {other}")),
+    };
+
+    // Host-side fetch — no CORS / tainted-canvas limits (client JS can't do this).
+    let client = reqwest::Client::builder().build().map_err(|e| e.to_string())?;
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let img = image::load_from_memory(&bytes).map_err(|e| format!("decode failed: {e}"))?;
+    // JPEG has no alpha channel — flatten transparency to RGB first.
+    let img = if matches!(fmt, ImageFormat::Jpeg) {
+        image::DynamicImage::ImageRgb8(img.to_rgb8())
+    } else {
+        img
+    };
+
+    let mut out: Vec<u8> = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), fmt)
+        .map_err(|e| format!("encode failed: {e}"))?;
+
+    // Default name from the URL's last path segment (minus its old extension).
+    let stem = url
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.split(['?', '#']).next())
+        .map(|s| s.rsplit_once('.').map(|(a, _)| a).unwrap_or(s))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("image");
+    let default_name = format!("{stem}.{ext}");
+
+    let mut dlg = rfd::AsyncFileDialog::new().set_file_name(&default_name);
+    if let Ok(dir) = app.path().download_dir() {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(handle) = dlg.save_file().await else {
+        return Ok(String::new()); // user cancelled
+    };
+    let path = handle.path().to_path_buf();
+    std::fs::write(&path, &out).map_err(|e| e.to_string())?;
+    // Surface it in the Downloads panel like any other download.
+    super::downloads::record_completed(&app, url, &path);
+    Ok(path.to_string_lossy().to_string())
 }
 
 /// Color/icon picking moved to a DOM grid popover in the sidebar

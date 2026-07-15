@@ -560,6 +560,113 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
     let _ = wv.with_webview(move |pwv| unsafe {
         let controller = pwv.controller();
         if let Ok(core) = controller.CoreWebView2() {
+            // Custom right-click menu: suppress WebView2's built-in context menu,
+            // capture what was clicked (link / image / selection), and pop our
+            // own native menu — the same OS-popup style as the sidebar menus.
+            {
+                use webview2_com::ContextMenuRequestedEventHandler;
+                use webview2_com::Microsoft::Web::WebView2::Win32::{
+                    ICoreWebView2_11, COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE,
+                    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE,
+                };
+                if let Ok(wv11) = core.cast::<ICoreWebView2_11>() {
+                    let app_cm = app.clone();
+                    let mut tok_cm = std::mem::zeroed();
+                    let handler = ContextMenuRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let Some(args) = args else { return Ok(()) };
+                            let mut ctx = crate::browser::PageMenuCtx::default();
+                            let Ok(target) = args.ContextMenuTarget() else { return Ok(()) };
+                            let mut b = BOOL::default();
+                            if target.IsEditable(&mut b).is_ok() { ctx.is_editable = b.as_bool(); }
+                            // Editable fields keep WebView2's own menu — it has
+                            // cut/copy/paste/undo we don't reimplement here.
+                            if ctx.is_editable {
+                                return Ok(());
+                            }
+                            // Everything else → our custom menu; block the built-in.
+                            let _ = args.SetHandled(true);
+                            let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE;
+                            let _ = target.Kind(&mut kind);
+                            ctx.is_image = kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE;
+                            if target.HasLinkUri(&mut b).is_ok() && b.as_bool() {
+                                let mut p = PWSTR::null();
+                                if target.LinkUri(&mut p).is_ok() { ctx.link = take_pwstr(p); }
+                            }
+                            if target.HasSourceUri(&mut b).is_ok() && b.as_bool() {
+                                let mut p = PWSTR::null();
+                                if target.SourceUri(&mut p).is_ok() { ctx.src = take_pwstr(p); }
+                            }
+                            let mut ps = PWSTR::null();
+                            if target.SelectionText(&mut ps).is_ok() { ctx.selection = take_pwstr(ps); }
+                            let mut pu = PWSTR::null();
+                            if target.PageUri(&mut pu).is_ok() { ctx.page_url = take_pwstr(pu); }
+                            {
+                                let state = app_cm.state::<Mutex<BrowserState>>();
+                                state.lock().unwrap().page_menu_ctx = ctx;
+                            }
+                            // Pop the menu on the next main-loop turn — never
+                            // inside this callback (popup_menu runs a modal loop).
+                            let a = app_cm.clone();
+                            let _ = app_cm.run_on_main_thread(move || {
+                                crate::browser::menus::show_page_menu_now(&a);
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let _ = wv11.add_ContextMenuRequested(&handler, &mut tok_cm);
+                }
+            }
+
+            // Download progress: Tauri's DownloadEvent only reports start/finish,
+            // so real %/speed needs WebView2 directly. On DownloadStarting we grab
+            // the DownloadOperation and subscribe to BytesReceivedChanged; that
+            // callback's `sender` IS the operation, so we read bytes + uri off it
+            // and emit a "progress" event the panel matches to its row by url.
+            {
+                use webview2_com::{BytesReceivedChangedEventHandler, DownloadStartingEventHandler};
+                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
+                if let Ok(wv4) = core.cast::<ICoreWebView2_4>() {
+                    let app_dl = app.clone();
+                    let mut tok_dl = std::mem::zeroed();
+                    let handler = DownloadStartingEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let Some(args) = args else { return Ok(()) };
+                            let Ok(op) = args.DownloadOperation() else { return Ok(()) };
+                            let app_p = app_dl.clone();
+                            let mut tok_b = std::mem::zeroed();
+                            let prog = BytesReceivedChangedEventHandler::create(Box::new(
+                                move |sender, _| {
+                                    let Some(op) = sender else { return Ok(()) };
+                                    let mut received: i64 = 0;
+                                    let _ = op.BytesReceived(&mut received);
+                                    let mut total: i64 = 0;
+                                    let _ = op.TotalBytesToReceive(&mut total);
+                                    let mut pu = PWSTR::null();
+                                    let uri = if op.Uri(&mut pu).is_ok() { take_pwstr(pu) } else { String::new() };
+                                    let _ = app_p.emit(
+                                        "download-event",
+                                        serde_json::json!({
+                                            "kind": "progress",
+                                            "uri": uri,
+                                            "received": received,
+                                            "total": total,
+                                        }),
+                                    );
+                                    Ok(())
+                                },
+                            ));
+                            let _ = op.add_BytesReceivedChanged(&prog, &mut tok_b);
+                            // The op holds the only ref while it downloads; keep the
+                            // handler alive for that lifetime (a few bytes per file).
+                            std::mem::forget(prog);
+                            Ok(())
+                        },
+                    ));
+                    let _ = wv4.add_DownloadStarting(&handler, &mut tok_dl);
+                }
+            }
+
             // Top-frame URL cache — the Shields request handler needs the page
             // origin (first-party check) on EVERY request. Calling Source() (a
             // COM round trip) per request was pure overhead on request-heavy

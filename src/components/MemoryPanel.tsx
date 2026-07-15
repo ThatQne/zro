@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { listen } from "@tauri-apps/api/event";
 import {
   X, StickyNote, CheckSquare, Square, Link2, Image as ImageIcon, Clipboard,
-  Globe, Search, Trash2, Pin, ExternalLink, Share2, List, Network, Plus, Circle,
+  Globe, Search, Trash2, Pin, ExternalLink, List, Network, Plus, Circle,
+  Pencil, Check as CheckIcon, RotateCcw,
 } from "lucide-react";
 import { useMemoryStore, MemNode, MemKind, MemEdge } from "../store/memory";
 import { useBrowserStore } from "../store/tabs";
@@ -51,16 +53,20 @@ async function downscaleImage(file: File, max = 520): Promise<string> {
 }
 
 export default function MemoryPanel({ onClose }: { onClose: () => void }) {
-  const { nodes, edges, load, add, update, remove, link, search } = useMemoryStore();
+  const { nodes, edges, trash, load, add, update, remove, recover, unlink, search, refresh } = useMemoryStore();
   const [view, setView] = useState<"list" | "graph">("list");
   const [q, setQ] = useState("");
   const [matches, setMatches] = useState<Map<string, number> | null>(null);
   const [sel, setSel] = useState<string | null>(null);
-  const [linkFrom, setLinkFrom] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [asTodo, setAsTodo] = useState(false);
 
   useEffect(() => { load(); }, [load]);
+
+  // Background embedding forms links after an add/edit — pull the fresh graph.
+  useEffect(() => {
+    const un = listen("zro:mem-changed", () => { refresh(); });
+    return () => { un.then((f) => f()); };
+  }, [refresh]);
 
   // Debounced semantic search.
   useEffect(() => {
@@ -87,13 +93,15 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
   async function addDraft() {
     const text = draft.trim();
     if (!text) return;
-    const isUrl = /^https?:\/\//i.test(text) || /^www\.\S+\.\S+/i.test(text) || /^\S+\.\w{2,}(\/\S*)?$/i.test(text);
-    if (asTodo) await add({ kind: "todo", title: text });
-    else if (isUrl) {
+    setDraft("");
+    // A bare URL becomes a link; everything else is a free-form note.
+    const isUrl = /^https?:\/\/\S+$/i.test(text) || /^www\.\S+\.\S+$/i.test(text) || /^[\w-]+\.\w{2,}(\/\S*)?$/i.test(text);
+    if (isUrl) {
       const url = /^https?:\/\//i.test(text) ? text : "https://" + text;
       await add({ kind: "link", title: text.replace(/^https?:\/\//, ""), url });
-    } else await add({ kind: "note", title: text });
-    setDraft("");
+    } else {
+      await add({ kind: "note", title: text });
+    }
   }
 
   async function onPaste(e: React.ClipboardEvent) {
@@ -113,11 +121,6 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
   }
 
   function onNodeClick(id: string) {
-    if (linkFrom && linkFrom !== id) {
-      link(linkFrom, id);
-      setLinkFrom(null);
-      return;
-    }
     setSel((s) => (s === id ? null : id));
   }
 
@@ -167,24 +170,18 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      {/* Capture bar */}
-      <div style={{ padding: "9px 12px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 6, alignItems: "center" }}>
-        <button
-          onClick={() => setAsTodo((v) => !v)}
-          title={asTodo ? "Adding as todo" : "Adding as note/link"}
-          style={{ display: "flex", background: asTodo ? "rgba(79,128,245,0.15)" : "#161616", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 6, padding: 6, cursor: "pointer", color: asTodo ? "#4f80f5" : "#666" }}
-        >
-          {asTodo ? <CheckSquare size={14} /> : <StickyNote size={14} />}
-        </button>
-        <input
+      {/* Capture bar — one box, paste anything (text, link, or image) */}
+      <div style={{ padding: "9px 12px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 6, alignItems: "flex-end" }}>
+        <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") addDraft(); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addDraft(); } }}
           onPaste={onPaste}
-          placeholder={asTodo ? "New todo…" : "Note, link, or paste an image…"}
-          style={{ flex: 1, background: "#161616", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 6, padding: "7px 10px", color: "#e4e4e4", fontSize: 12, outline: "none" }}
+          rows={1}
+          placeholder="Jot anything — note, link, or paste an image…"
+          style={{ flex: 1, background: "#161616", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 6, padding: "7px 10px", color: "#e4e4e4", fontSize: 12, outline: "none", resize: "none", maxHeight: 120, minHeight: 34, lineHeight: 1.4, fontFamily: "inherit" }}
         />
-        <button onClick={addDraft} style={{ display: "flex", background: "#4f80f5", border: "none", borderRadius: 6, padding: 7, cursor: "pointer", color: "#fff" }}><Plus size={14} /></button>
+        <button onClick={addDraft} title="Add (Enter)" style={{ display: "flex", background: "#4f80f5", border: "none", borderRadius: 6, padding: 8, cursor: "pointer", color: "#fff" }}><Plus size={14} /></button>
       </div>
 
       {/* Search */}
@@ -199,13 +196,6 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
         {q && <button onClick={() => setQ("")} style={{ background: "none", border: "none", color: "#555", cursor: "pointer", display: "flex" }}><X size={12} /></button>}
       </div>
 
-      {linkFrom && (
-        <div style={{ padding: "6px 12px", background: "rgba(79,128,245,0.1)", fontSize: 11, color: "#4f80f5", display: "flex", justifyContent: "space-between" }}>
-          <span>Click another node to link it</span>
-          <button onClick={() => setLinkFrom(null)} style={{ background: "none", border: "none", color: "#4f80f5", cursor: "pointer" }}>cancel</button>
-        </div>
-      )}
-
       {/* Body */}
       <div style={{ flex: 1, minHeight: 0, overflow: view === "list" ? "auto" : "hidden" }}>
         {view === "list" ? (
@@ -218,7 +208,9 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
             onSelect={onNodeClick}
             onUpdate={update}
             onRemove={(id) => { remove(id); if (sel === id) setSel(null); }}
-            onStartLink={(id) => setLinkFrom(id)}
+            onUnlink={unlink}
+            trash={matches ? [] : trash}
+            onRecover={recover}
             empty={nodes.length === 0}
             counts={counts}
           />
@@ -228,7 +220,6 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
             edges={edges}
             matches={matches}
             sel={sel}
-            linkFrom={linkFrom}
             onSelect={onNodeClick}
           />
         )}
@@ -248,7 +239,7 @@ function SegBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 // ── List view ───────────────────────────────────────────────────────────────
 
 function ListView({
-  nodes, byId, neighborsOf, sel, matches, onSelect, onUpdate, onRemove, onStartLink, empty, counts,
+  nodes, byId, neighborsOf, sel, matches, onSelect, onUpdate, onRemove, onUnlink, trash, onRecover, empty, counts,
 }: {
   nodes: MemNode[];
   byId: Map<string, MemNode>;
@@ -258,17 +249,19 @@ function ListView({
   onSelect: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Pick<MemNode, "title" | "body" | "done" | "pinned" | "tags">>) => void;
   onRemove: (id: string) => void;
-  onStartLink: (id: string) => void;
+  onUnlink: (a: string, b: string) => void;
+  trash: MemNode[];
+  onRecover: (id: string) => void;
   empty: boolean;
   counts: Record<string, number>;
 }) {
-  if (empty) {
+  if (empty && trash.length === 0) {
     return (
       <div style={{ padding: "40px 24px", textAlign: "center", color: "#444", fontSize: 12, lineHeight: 1.7 }}>
         <Network size={28} color="#2a2a2a" style={{ marginBottom: 12 }} />
         <div style={{ color: "#666", marginBottom: 6 }}>Your brain is empty.</div>
-        Add a note, drop a link, jot a todo, or paste an image above.<br />
-        Pages you visit show up here too, auto-linked to related things.
+        Jot a note, drop a link, or paste an image above.<br />
+        Related entries auto-link into a graph as you add them.
       </div>
     );
   }
@@ -296,16 +289,43 @@ function ListView({
           onSelect={() => onSelect(n.id)}
           onUpdate={onUpdate}
           onRemove={() => onRemove(n.id)}
-          onStartLink={() => onStartLink(n.id)}
           onOpenNeighbor={onSelect}
+          onUnlink={onUnlink}
         />
       ))}
+
+      {/* Recently deleted — greyed, click the arrow to restore (session only). */}
+      {trash.length > 0 && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+          <div style={{ fontSize: 9.5, color: "#444", textTransform: "uppercase", letterSpacing: "0.08em", padding: "2px 14px 6px" }}>
+            Recently deleted ({trash.length})
+          </div>
+          {trash.map((n) => (
+            <div
+              key={n.id}
+              style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 14px", opacity: 0.4 }}
+            >
+              <span style={{ display: "flex", flexShrink: 0 }}>{kindIcon(n.kind, 12)}</span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#888", textDecoration: "line-through", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {n.title || hostOf(n.url) || "(untitled)"}
+              </span>
+              <button
+                title="Restore"
+                onClick={() => onRecover(n.id)}
+                style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5, padding: "3px 7px", cursor: "pointer", color: "#9aa7c7", fontSize: 10 }}
+              >
+                <RotateCcw size={11} /> Restore
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 function MemRow({
-  n, expanded, neighbors, score, onSelect, onUpdate, onRemove, onStartLink, onOpenNeighbor,
+  n, expanded, neighbors, score, onSelect, onUpdate, onRemove, onOpenNeighbor, onUnlink,
 }: {
   n: MemNode;
   expanded: boolean;
@@ -314,14 +334,55 @@ function MemRow({
   onSelect: () => void;
   onUpdate: (id: string, patch: Partial<Pick<MemNode, "title" | "body" | "done" | "pinned" | "tags">>) => void;
   onRemove: () => void;
-  onStartLink: () => void;
   onOpenNeighbor: (id: string) => void;
+  onUnlink: (a: string, b: string) => void;
 }) {
   const host = hostOf(n.url);
   const open = () => { if (n.url) useBrowserStore.getState().createTab(n.url).catch(() => {}); };
+  const [editing, setEditing] = useState(false);
+  const [t, setT] = useState(n.title);
+  const [b, setB] = useState(n.body);
+  // Free-text kinds can be edited in place; images and auto-captured visits can't.
+  const editable = n.kind === "note" || n.kind === "todo" || n.kind === "clip" || n.kind === "link";
+
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+  function startEdit(e: React.MouseEvent) { stop(e); setT(n.title); setB(n.body); setEditing(true); }
+  function saveEdit() { onUpdate(n.id, { title: t.trim(), body: b.trim() }); setEditing(false); }
+
+  // Inline editor — replaces the row content while editing.
+  if (editing) {
+    return (
+      <div style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", background: "rgba(79,128,245,0.05)", padding: "9px 14px", display: "flex", gap: 9 }}>
+        <span style={{ marginTop: 3, display: "flex" }}>{kindIcon(n.kind)}</span>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+          <input
+            autoFocus
+            value={t}
+            onChange={(e) => setT(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(false); }}
+            placeholder="Title"
+            style={{ background: "#161616", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "6px 8px", color: "#e4e4e4", fontSize: 12, outline: "none" }}
+          />
+          <textarea
+            value={b}
+            onChange={(e) => setB(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setEditing(false); }}
+            placeholder="Notes…"
+            rows={2}
+            style={{ background: "#161616", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 5, padding: "6px 8px", color: "#cfcfcf", fontSize: 11.5, outline: "none", resize: "vertical", fontFamily: "inherit", lineHeight: 1.4 }}
+          />
+          <div style={{ display: "flex", gap: 6 }}>
+            <ActBtn onClick={saveEdit}><CheckIcon size={11} /> Save</ActBtn>
+            <ActBtn onClick={() => setEditing(false)}>Cancel</ActBtn>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
+      className="mem-row"
       style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", background: expanded ? "rgba(255,255,255,0.02)" : "transparent" }}
     >
       <div onClick={onSelect} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 14px", cursor: "pointer" }}>
@@ -348,41 +409,70 @@ function MemRow({
             </div>
           )}
         </div>
-        {n.pinned && <Pin size={11} color="#4f80f5" style={{ marginTop: 2 }} />}
-        {score != null && <span style={{ fontSize: 9, color: "#4f80f5", fontFamily: "monospace", marginTop: 2 }}>{(score).toFixed(2)}</span>}
+        {/* Right side: badges by default, action toolbar on hover. Toggled by
+            CSS :hover (not JS) so the buttons reappear on the row now under the
+            cursor even when a delete shifts the list without a mouse move. */}
+        <div className="mem-badges" style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+          {n.pinned && <Pin size={11} color="#4f80f5" />}
+          {score != null && <span style={{ fontSize: 9, color: "#4f80f5", fontFamily: "monospace" }}>{(score).toFixed(2)}</span>}
+        </div>
+        <div className="mem-actions" onClick={stop} style={{ gap: 1, marginTop: -2 }}>
+          {editable && <MiniBtn title="Edit" onClick={startEdit}><Pencil size={12} /></MiniBtn>}
+          {n.url && <MiniBtn title="Open" onClick={(e) => { stop(e); open(); }}><ExternalLink size={12} /></MiniBtn>}
+          <MiniBtn title={n.pinned ? "Unpin" : "Pin"} active={n.pinned} onClick={(e) => { stop(e); onUpdate(n.id, { pinned: !n.pinned }); }}><Pin size={12} /></MiniBtn>
+          <MiniBtn title="Delete" danger onClick={(e) => { stop(e); onRemove(); }}><Trash2 size={12} /></MiniBtn>
+        </div>
       </div>
 
       {expanded && (
         <div style={{ padding: "0 14px 12px 34px" }}>
           {n.image && <img src={n.image} style={{ maxWidth: "100%", borderRadius: 6, marginBottom: 8 }} />}
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: neighbors.length ? 10 : 0 }}>
-            {n.url && <ActBtn onClick={open}><ExternalLink size={11} /> Open</ActBtn>}
-            <ActBtn onClick={() => onUpdate(n.id, { pinned: !n.pinned })}><Pin size={11} /> {n.pinned ? "Unpin" : "Pin"}</ActBtn>
-            <ActBtn onClick={onStartLink}><Share2 size={11} /> Link</ActBtn>
-            <ActBtn onClick={onRemove} danger><Trash2 size={11} /> Delete</ActBtn>
+          <div style={{ fontSize: 9.5, color: "#555", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
+            Linked ({neighbors.length})
           </div>
-          {neighbors.length > 0 && (
-            <div>
-              <div style={{ fontSize: 9.5, color: "#555", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>
-                Linked ({neighbors.length})
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                {neighbors.slice(0, 12).map((m) => (
+          {neighbors.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {neighbors.slice(0, 12).map((m) => (
+                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#141414", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 5, padding: "5px 8px" }}>
                   <button
-                    key={m.id}
                     onClick={() => onOpenNeighbor(m.id)}
-                    style={{ display: "flex", alignItems: "center", gap: 6, background: "#141414", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 5, padding: "5px 8px", cursor: "pointer", color: "#bbb", fontSize: 11, textAlign: "left" }}
+                    style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", color: "#bbb", fontSize: 11, textAlign: "left" }}
                   >
                     {kindIcon(m.kind, 11)}
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || hostOf(m.url)}</span>
                   </button>
-                ))}
-              </div>
+                  <button
+                    title="Remove this link"
+                    onClick={() => onUnlink(n.id, m.id)}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#555", display: "flex", flexShrink: 0, padding: 2 }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
             </div>
+          ) : (
+            <div style={{ fontSize: 10.5, color: "#3a3a3a" }}>No links yet. Related entries connect automatically as you add more.</div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+function MiniBtn({ children, onClick, title, active, danger }: { children: React.ReactNode; onClick: (e: React.MouseEvent) => void; title: string; active?: boolean; danger?: boolean }) {
+  const [h, setH] = useState(false);
+  const color = danger ? "#c56" : active ? "#4f80f5" : h ? "#ccc" : "#777";
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      style={{ display: "flex", padding: 4, borderRadius: 5, cursor: "pointer", border: "1px solid " + (active ? "rgba(79,128,245,0.35)" : h ? "rgba(255,255,255,0.1)" : "transparent"), background: active ? "rgba(79,128,245,0.12)" : h ? "rgba(255,255,255,0.05)" : "transparent", color }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -402,13 +492,12 @@ function ActBtn({ children, onClick, danger }: { children: React.ReactNode; onCl
 interface P { x: number; y: number; vx: number; vy: number }
 
 function GraphView({
-  nodes, edges, matches, sel, linkFrom, onSelect,
+  nodes, edges, matches, sel, onSelect,
 }: {
   nodes: MemNode[];
   edges: MemEdge[];
   matches: Map<string, number> | null;
   sel: string | null;
-  linkFrom: string | null;
   onSelect: (id: string) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -483,7 +572,7 @@ function GraphView({
           let dx = a.x - b.x, dy = a.y - b.y;
           let d2 = dx * dx + dy * dy;
           if (d2 < 0.01) { dx = Math.random(); dy = Math.random(); d2 = 1; }
-          const f = 900 / d2;
+          const f = Math.min(900 / d2, 30); // cap so overlapping nodes don't explode
           const d = Math.sqrt(d2);
           const fx = (dx / d) * f, fy = (dy / d) * f;
           a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
@@ -507,7 +596,10 @@ function GraphView({
         if (drag.current?.id === n.id) { p.vx = 0; p.vy = 0; continue; }
         p.vx += (w / 2 - p.x) * 0.0016;
         p.vy += (h / 2 - p.y) * 0.0016;
-        p.vx *= 0.86; p.vy *= 0.86;
+        p.vx *= 0.85; p.vy *= 0.85;
+        // clamp speed so a fast drag can't fling neighbours across the panel
+        const sp = Math.hypot(p.vx, p.vy);
+        if (sp > 6) { p.vx = (p.vx / sp) * 6; p.vy = (p.vy / sp) * 6; }
         p.x += p.vx; p.y += p.vy;
         moving += Math.abs(p.vx) + Math.abs(p.vy);
       }
@@ -538,7 +630,7 @@ function GraphView({
         ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fillStyle = KIND_COLOR[n.kind];
         ctx.fill();
-        if (n.id === focus || n.id === linkFrom) {
+        if (n.id === focus) {
           ctx.lineWidth = 2; ctx.strokeStyle = "#4f80f5"; ctx.stroke();
         } else if (isMatch) {
           ctx.lineWidth = 1.5; ctx.strokeStyle = "rgba(79,128,245,0.8)"; ctx.stroke();
@@ -607,7 +699,7 @@ function GraphView({
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
     };
-  }, [gNodes, gEdges, sel, matches, linkFrom, onSelect]);
+  }, [gNodes, gEdges, sel, matches, onSelect]);
 
   return (
     <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative" }}>

@@ -51,6 +51,19 @@ pub struct TabInfo {
     pub is_loading: bool,
 }
 
+/// What the user right-clicked on in a web page — captured from WebView2's
+/// ContextMenuRequested target so the native menu (and its actions) can be
+/// built host-side. All fields empty = plain page area.
+#[derive(Default, Clone, serde::Serialize)]
+pub struct PageMenuCtx {
+    pub link: String,      // href of the <a> under the cursor
+    pub src: String,       // image / media source URL
+    pub selection: String, // selected text
+    pub page_url: String,  // top document URL
+    pub is_image: bool,
+    pub is_editable: bool,
+}
+
 pub struct BrowserState {
     pub tabs: HashMap<String, TabInfo>,
     pub(crate) histories: HashMap<String, tabs::TabHistory>,
@@ -58,6 +71,8 @@ pub struct BrowserState {
     pub layout: layout::Layout,
     /// Target of the currently open native context menu (tab ids or folder id)
     pub menu_ctx: Vec<String>,
+    /// Context of the currently open PAGE (web content) right-click menu.
+    pub page_menu_ctx: PageMenuCtx,
     /// Navigation start times — measures real page load latency
     pub(crate) nav_started: HashMap<String, std::time::Instant>,
     /// Live window-resize state (see [`layout::on_live_resize`])
@@ -98,6 +113,7 @@ impl Default for BrowserState {
             active_tab_id: None,
             layout: layout::Layout::default(),
             menu_ctx: Vec::new(),
+            page_menu_ctx: PageMenuCtx::default(),
             nav_started: HashMap::new(),
             resizing: false,
             resize_gen: 0,

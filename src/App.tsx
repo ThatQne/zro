@@ -4,10 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronLeft, ChevronRight, RotateCw, Settings as SettingsIcon,
-  Bot, BarChart2, EyeOff, Clock, Download, Minus, Square, X, Shield, Network,
+  Bot, BarChart2, EyeOff, Clock, Download, Minus, Square, X, Shield, Network, MoreHorizontal,
 } from "lucide-react";
 import { Puzzle } from "lucide-react";
-import { useBrowserStore, activeFolderId } from "./store/tabs";
+import { useBrowserStore, activeFolderId, TOOL_KEYS, searchUrl } from "./store/tabs";
 import { useDownloadsStore } from "./store/downloads";
 import { useExtStore } from "./store/extensions";
 import { trackOverlay } from "./store/overlays";
@@ -29,13 +29,16 @@ const BAR_H = 40;        // single top row height
 
 export type PanelKind = "stats" | "ai" | "history" | "settings" | "downloads" | "shield" | "memory";
 
+// Web-content right-click context (from browser/menus.rs PageMenuCtx)
+type PageCtx = { link: string; src: string; selection: string; page_url: string; is_image?: boolean; is_editable?: boolean };
+
 // Module-level: survives StrictMode unmount/remount cycles
 let bootDone = false;
 
 export default function App() {
   const {
     tabs, createTab, goBack, goForward, reload,
-    isIncognito, initEvents,
+    isIncognito, initEvents, settings,
   } = useBrowserStore();
 
   const [panel, setPanel] = useState<PanelKind | null>(null);
@@ -179,9 +182,29 @@ export default function App() {
 
   // --- Native context-menu actions -------------------------------------------
   useEffect(() => {
-    const unsub = listen<{ action: string; ctx: string[] }>("ctx-action", async (e) => {
-      const { action, ctx } = e.payload;
+    const unsub = listen<{ action: string; ctx: string[]; page?: PageCtx }>("ctx-action", async (e) => {
+      const { action, ctx, page } = e.payload;
       const s = useBrowserStore.getState();
+
+      // Web-content right-click actions (see browser/menus.rs show_page_menu_now)
+      if (action.startsWith("page:")) {
+        const p = page ?? { link: "", src: "", selection: "", page_url: "" };
+        if (action === "page:open-link" && p.link) s.createTab(p.link);
+        else if (action === "page:copy-link" && p.link) navigator.clipboard.writeText(p.link).catch(() => {});
+        else if (action === "page:open-image" && p.src) s.createTab(p.src);
+        else if (action === "page:copy-image" && p.src) navigator.clipboard.writeText(p.src).catch(() => {});
+        else if (action === "page:copy" && p.selection) navigator.clipboard.writeText(p.selection).catch(() => {});
+        else if (action === "page:copy-url" && p.page_url) navigator.clipboard.writeText(p.page_url).catch(() => {});
+        else if (action === "page:search" && p.selection) s.createTab(searchUrl(p.selection, s.settings.searchEngine));
+        else if (action === "page:back") s.goBack();
+        else if (action === "page:forward") s.goForward();
+        else if (action === "page:reload") s.reload();
+        else if (action.startsWith("page:save-image:") && p.src) {
+          const format = action.slice("page:save-image:".length);
+          invoke("save_image_as", { url: p.src, format }).catch(() => {});
+        }
+        return;
+      }
 
       if (action === "tab:close") s.closeTabs(ctx);
       else if (action === "tab:close-others") s.closeOtherTabs(ctx);
@@ -254,6 +277,24 @@ export default function App() {
         useExtStore.getState().togglePin(ctx[0]);
       } else if (action === "ext:remove") {
         useExtStore.getState().remove(ctx[0]);
+      } else if (action.startsWith("tool:")) {
+        const [, sub, key] = action.split(":");
+        if (sub === "pin" || sub === "unpin") {
+          const cur = s.settings.pinnedTools ?? [];
+          const next = sub === "pin"
+            ? Array.from(new Set([...cur, key]))
+            : cur.filter((k) => k !== key);
+          s.setSettings({ pinnedTools: next });
+        } else if (sub === "open") {
+          if (key === "incognito") {
+            if (!s.isIncognito) {
+              if (s.settings.incognitoLock) setLockOpen(true);
+              else s.toggleIncognito();
+            }
+          } else {
+            setPanel(key as PanelKind);
+          }
+        }
       }
 
       if (ctx.length > 1 && action.startsWith("tab:")) s.clearSelection();
@@ -296,6 +337,25 @@ export default function App() {
     setPanel((cur) => (cur === p ? null : p));
   }
 
+  // Toolbar pin system: pinned tools sit in the bar, the rest fold into a "⋯"
+  // overflow (native menu — a DOM dropdown would be occluded by the page
+  // webview). Settings is always shown and never unpinnable.
+  const TOOL_LABELS: Record<string, string> = {
+    shield: "Shields", incognito: "Incognito", memory: "Memory",
+    history: "History", downloads: "Downloads", stats: "Stats", ai: "AI",
+  };
+  const pinnedTools = settings.pinnedTools ?? [];
+  const isPinned = (k: string) => pinnedTools.includes(k);
+  const unpinnedTools = TOOL_KEYS.filter((k) => !isPinned(k));
+  const openOverflow = () =>
+    invoke("show_tools_menu", {
+      tools: unpinnedTools.map((k) => ({ key: k, label: TOOL_LABELS[k] })),
+    }).catch(() => {});
+  const toolCtx = (key: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    invoke("show_tool_menu", { key, label: TOOL_LABELS[key] }).catch(() => {});
+  };
+
   return (
     <div
       className="app-shell"
@@ -334,45 +394,70 @@ export default function App() {
 
         <div className="flex gap-0.5 no-drag">
           <PinnedExtensions />
-          <ShieldBtn onClick={() => togglePanel("shield")} active={panel === "shield"} />
-          <NavBtn
-            icon={<EyeOff size={13} />}
-            onClick={requestIncognito}
-            title={isIncognito ? "Exit Incognito" : "Incognito"}
-            active={isIncognito}
-            activeColor="rgba(150,80,220,0.6)"
-          />
-          <NavBtn
-            icon={<Network size={13} />}
-            onClick={() => togglePanel("memory")}
-            title="Memory (Ctrl+M)"
-            active={panel === "memory"}
-          />
-          <NavBtn
-            icon={<Clock size={13} />}
-            onClick={() => togglePanel("history")}
-            title="History (Ctrl+H)"
-            active={panel === "history"}
-          />
-          <div style={{ position: "relative" }}>
+          {isPinned("shield") && (
+            <ShieldBtn onClick={() => togglePanel("shield")} active={panel === "shield"} onContextMenu={toolCtx("shield")} />
+          )}
+          {isPinned("incognito") && (
             <NavBtn
-              icon={<Download size={13} />}
-              onClick={() => togglePanel("downloads")}
-              title="Downloads (Ctrl+J)"
-              active={panel === "downloads"}
+              icon={<EyeOff size={13} />}
+              onClick={requestIncognito}
+              title={isIncognito ? "Exit Incognito" : "Incognito"}
+              active={isIncognito}
+              activeColor="rgba(150,80,220,0.6)"
+              onContextMenu={toolCtx("incognito")}
             />
-            {(dlUnseen > 0 || dlActive) && panel !== "downloads" && (
-              <span style={{
-                position: "absolute", top: 3, right: 3,
-                width: 7, height: 7, borderRadius: "50%",
-                background: dlActive ? "#4f80f5" : "#4fb56a",
-                pointerEvents: "none",
-                animation: dlActive ? "zro-dl-pulse 1.2s ease-in-out infinite" : undefined,
-              }} />
-            )}
-          </div>
-          <NavBtn icon={<BarChart2 size={14} />} onClick={() => togglePanel("stats")} title="Stats" active={panel === "stats"} />
-          <NavBtn icon={<Bot size={14} />} onClick={() => togglePanel("ai")} title="AI" active={panel === "ai"} />
+          )}
+          {isPinned("memory") && (
+            <NavBtn
+              icon={<Network size={13} />}
+              onClick={() => togglePanel("memory")}
+              title="Memory (Ctrl+M)"
+              active={panel === "memory"}
+              onContextMenu={toolCtx("memory")}
+            />
+          )}
+          {isPinned("history") && (
+            <NavBtn
+              icon={<Clock size={13} />}
+              onClick={() => togglePanel("history")}
+              title="History (Ctrl+H)"
+              active={panel === "history"}
+              onContextMenu={toolCtx("history")}
+            />
+          )}
+          {isPinned("downloads") && (
+            <div style={{ position: "relative" }}>
+              <NavBtn
+                icon={<Download size={13} />}
+                onClick={() => togglePanel("downloads")}
+                title="Downloads (Ctrl+J)"
+                active={panel === "downloads"}
+                onContextMenu={toolCtx("downloads")}
+              />
+              {(dlUnseen > 0 || dlActive) && panel !== "downloads" && (
+                <span style={{
+                  position: "absolute", top: 3, right: 3,
+                  width: 7, height: 7, borderRadius: "50%",
+                  background: dlActive ? "#4f80f5" : "#4fb56a",
+                  pointerEvents: "none",
+                  animation: dlActive ? "zro-dl-pulse 1.2s ease-in-out infinite" : undefined,
+                }} />
+              )}
+            </div>
+          )}
+          {isPinned("stats") && (
+            <NavBtn icon={<BarChart2 size={14} />} onClick={() => togglePanel("stats")} title="Stats" active={panel === "stats"} onContextMenu={toolCtx("stats")} />
+          )}
+          {isPinned("ai") && (
+            <NavBtn icon={<Bot size={14} />} onClick={() => togglePanel("ai")} title="AI" active={panel === "ai"} onContextMenu={toolCtx("ai")} />
+          )}
+          {unpinnedTools.length > 0 && (
+            <NavBtn
+              icon={<MoreHorizontal size={15} />}
+              onClick={openOverflow}
+              title={`More tools (${unpinnedTools.length})`}
+            />
+          )}
           <NavBtn icon={<SettingsIcon size={13} />} onClick={() => togglePanel("settings")} title="Settings (Ctrl+,)" active={panel === "settings"} />
         </div>
 
@@ -535,12 +620,13 @@ interface NavBtnProps {
   title: string;
   active?: boolean;
   activeColor?: string;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /** Shields status in the toolbar: lit blue with a filled crest when active
  *  (dot appears once it has blocked something), dim when off. Click → the
  *  Shields panel, where the suite's pillars live. */
-function ShieldBtn({ onClick, active }: { onClick: () => void; active?: boolean }) {
+function ShieldBtn({ onClick, active, onContextMenu }: { onClick: () => void; active?: boolean; onContextMenu?: (e: React.MouseEvent) => void }) {
   const enabled = useBrowserStore((s) => s.settings.shieldsEnabled);
   const [blocked, setBlocked] = useState(0);
   useEffect(() => {
@@ -560,6 +646,7 @@ function ShieldBtn({ onClick, active }: { onClick: () => void; active?: boolean 
   return (
     <motion.button
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={enabled ? `Shields active — ${blocked.toLocaleString()} blocked` : "Shields off"}
       whileHover={{ backgroundColor: "rgba(255,255,255,0.07)" }}
       whileTap={{ scale: 0.88 }}
@@ -581,10 +668,11 @@ function ShieldBtn({ onClick, active }: { onClick: () => void; active?: boolean 
   );
 }
 
-function NavBtn({ icon, onClick, title, active, activeColor = "rgba(79,128,245,0.6)" }: NavBtnProps) {
+function NavBtn({ icon, onClick, title, active, activeColor = "rgba(79,128,245,0.6)", onContextMenu }: NavBtnProps) {
   return (
     <motion.button
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={title}
       whileHover={{ backgroundColor: "rgba(255,255,255,0.07)", color: "#e4e4e4" }}
       whileTap={{ scale: 0.88 }}

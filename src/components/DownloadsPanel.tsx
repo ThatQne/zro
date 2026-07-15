@@ -14,6 +14,26 @@ function timeLabel(ts: number): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
+function fmtBytes(n: number): string {
+  if (!n || n < 0) return "0 B";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+}
+
+/** Seconds → "3s" / "2m 05s" / "1h 04m" left. */
+function fmtEta(secs: number): string {
+  if (!isFinite(secs) || secs < 0) return "";
+  if (secs < 60) return `${Math.ceil(secs)}s left`;
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60), s = Math.round(secs % 60);
+    return `${m}m ${String(s).padStart(2, "0")}s left`;
+  }
+  const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+  return `${h}h ${String(m).padStart(2, "0")}m left`;
+}
+
 /** Extension id when the URL is a Chrome Web Store detail page. */
 function webstoreExtId(url: string | undefined): string | null {
   if (!url) return null;
@@ -135,6 +155,7 @@ export default function DownloadsPanel({ onClose }: Props) {
 
       <style>{`
         @keyframes zro-dl-pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+        @keyframes zro-dl-indet { 0%{margin-left:-35%} 100%{margin-left:100%} }
       `}</style>
     </motion.div>
   );
@@ -166,13 +187,40 @@ function DownloadRow({ item }: { item: DownloadItem }) {
         }}>
           {item.filename}
         </div>
-        <div style={{ fontSize: 9, color: item.state === "failed" ? "#a55" : "#3a3a3a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {item.state === "active"
-            ? "downloading…"
-            : item.state === "failed"
-            ? item.reason || "failed"
-            : timeLabel(item.started_at)}
-        </div>
+        {item.state === "active" ? (
+          <>
+            <div style={{ fontSize: 9, color: "#6a6a6a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {(() => {
+                const rec = item.received ?? 0, tot = item.total ?? 0;
+                const spd = item.speed ? `${fmtBytes(item.speed)}/s` : "";
+                const eta = item.speed && tot > rec ? fmtEta((tot - rec) / item.speed) : "";
+                if (tot > 0) {
+                  const pct = Math.min(100, Math.round((rec / tot) * 100));
+                  return `${pct}%  ·  ${fmtBytes(rec)} / ${fmtBytes(tot)}${spd ? "  ·  " + spd : ""}${eta ? "  ·  " + eta : ""}`;
+                }
+                return spd ? `${fmtBytes(rec)}  ·  ${spd}` : "downloading…";
+              })()}
+            </div>
+            <div style={{ marginTop: 4, height: 3, borderRadius: 2, background: "#1c1c1c", overflow: "hidden" }}>
+              {item.total && item.total > 0 ? (
+                <div style={{
+                  height: "100%", borderRadius: 2, background: "#4f80f5",
+                  width: `${Math.min(100, ((item.received ?? 0) / item.total) * 100)}%`,
+                  transition: "width .2s linear",
+                }} />
+              ) : (
+                <div style={{
+                  height: "100%", width: "35%", borderRadius: 2, background: "#4f80f5",
+                  animation: "zro-dl-indet 1.1s ease-in-out infinite",
+                }} />
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 9, color: item.state === "failed" ? "#a55" : "#3a3a3a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {item.state === "failed" ? item.reason || "failed" : timeLabel(item.started_at)}
+          </div>
+        )}
       </div>
       {item.state === "done" && (
         <>
@@ -190,22 +238,31 @@ function DownloadRow({ item }: { item: DownloadItem }) {
           >
             <FolderOpen size={12} />
           </button>
-          <button
-            onClick={() => {
-              // Two-step: first click arms (turns red), second click deletes
-              // the FILE from disk — no room for an accidental single click
-              if (!confirming) { setConfirming(true); setTimeout(() => setConfirming(false), 2500); return; }
-              deleteFile(item.id).catch(() => setConfirming(false));
-            }}
-            title={confirming ? "Click again — deletes the file from disk" : "Delete file from disk"}
-            style={{
-              background: "none", border: "none", cursor: "pointer",
-              color: confirming ? "#d66" : "#4a5a7a", display: "flex", padding: 2, flexShrink: 0,
-            }}
-          >
-            <Trash2 size={12} />
-          </button>
         </>
+      )}
+      {/* Delete on any FINISHED row (done or failed). For a completed file the
+          first click arms (deletes from disk); a failed row has no file so it
+          just clears the entry. */}
+      {item.state !== "active" && (
+        <button
+          onClick={() => {
+            if (item.state === "done" && !confirming) {
+              setConfirming(true); setTimeout(() => setConfirming(false), 2500); return;
+            }
+            deleteFile(item.id).catch(() => setConfirming(false));
+          }}
+          title={
+            item.state === "failed"
+              ? "Remove from list"
+              : confirming ? "Click again — deletes the file from disk" : "Delete file from disk"
+          }
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: confirming ? "#d66" : "#4a5a7a", display: "flex", padding: 2, flexShrink: 0,
+          }}
+        >
+          <Trash2 size={12} />
+        </button>
       )}
     </div>
   );

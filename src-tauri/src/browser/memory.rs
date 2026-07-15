@@ -17,14 +17,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent::OLLAMA;
 
 const NODE_CAP: usize = 4000;
-const SEMANTIC_THRESHOLD: f32 = 0.62;
-const SEMANTIC_MAX_LINKS: usize = 6;
-const TEMPORAL_WINDOW_SECS: u64 = 600; // 10 min
+// Auto-linking is semantic-only and deliberately sparse: only genuinely related
+// entries connect, so the graph stays readable instead of a hairball. Domain /
+// temporal auto-links were removed (they linked everything to everything).
+const SEMANTIC_THRESHOLD: f32 = 0.70;
+const SEMANTIC_MAX_LINKS: usize = 4;
 const EMBED_MODEL: &str = "nomic-embed-text";
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -196,7 +198,7 @@ async fn embed(text: &str) -> Result<Vec<f32>, String> {
         return Err("empty".into());
     }
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(6))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
@@ -234,61 +236,76 @@ fn upsert_edge(g: &mut MemGraph, a: &str, b: &str, kind: EdgeKind, weight: f32) 
     g.edges.push(MemEdge { a: a.to_string(), b: b.to_string(), kind, weight });
 }
 
-/// Form edges from the node at `idx` to every other node.
+/// Form semantic edges from the node at `idx` to its nearest neighbours.
+///
+/// Only meaning-based links: the top-K most-similar nodes over a fairly high
+/// threshold. No domain/temporal fan-out — those made every entry link to every
+/// other, which drowned the graph. Needs an embedding (Ollama); a node with no
+/// embed simply stays unlinked until it gets one.
 fn autolink(g: &mut MemGraph, idx: usize) {
-    let (id, host, created, has_embed) = {
-        let n = &g.nodes[idx];
-        (
-            n.id.clone(),
-            n.url.as_deref().and_then(host_of),
-            n.created,
-            n.embed.is_some(),
-        )
+    let me = match &g.nodes[idx].embed {
+        Some(v) => v.clone(),
+        None => return,
+    };
+    let id = g.nodes[idx].id.clone();
+    let mut sims: Vec<(String, f32)> = Vec::new();
+    for (j, other) in g.nodes.iter().enumerate() {
+        if j == idx {
+            continue;
+        }
+        if let Some(oe) = &other.embed {
+            let s = cosine(&me, oe);
+            if s >= SEMANTIC_THRESHOLD {
+                sims.push((other.id.clone(), s));
+            }
+        }
+    }
+    sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (oid, s) in sims.into_iter().take(SEMANTIC_MAX_LINKS) {
+        upsert_edge(g, &id, &oid, EdgeKind::Semantic, s);
+    }
+}
+
+/// Background worker: embed a node's text, store the vector, re-link it, persist,
+/// and notify the frontend. Runs off the command hot path so `mem_add` /
+/// `mem_update` return instantly even when Ollama is slow or down.
+async fn embed_and_link(app: AppHandle, id: String) {
+    let src = {
+        let state = app.state::<Mutex<MemGraph>>();
+        let g = state.lock().unwrap();
+        match g.nodes.iter().find(|n| n.id == id) {
+            Some(n) => {
+                let host = n.url.as_deref().and_then(host_of).unwrap_or_default();
+                format!("{}\n{}\n{}", n.title, n.body, host)
+            }
+            None => return,
+        }
+    };
+    let vec = match embed(&src).await {
+        Ok(v) => v,
+        Err(_) => return, // Ollama down — node stays unlinked, no harm
     };
 
-    // semantic: top-K over threshold
-    if has_embed {
-        let me = g.nodes[idx].embed.clone().unwrap();
-        let mut sims: Vec<(String, f32)> = Vec::new();
-        for (j, other) in g.nodes.iter().enumerate() {
-            if j == idx {
-                continue;
-            }
-            if let Some(oe) = &other.embed {
-                let s = cosine(&me, oe);
-                if s >= SEMANTIC_THRESHOLD {
-                    sims.push((other.id.clone(), s));
-                }
-            }
-        }
-        sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        for (oid, s) in sims.into_iter().take(SEMANTIC_MAX_LINKS) {
-            upsert_edge(g, &id, &oid, EdgeKind::Semantic, s);
-        }
+    let state = app.state::<Mutex<MemGraph>>();
+    let mut g = state.lock().unwrap();
+    let idx = match g.nodes.iter().position(|n| n.id == id) {
+        Some(i) => i,
+        None => return,
+    };
+    if g.dim == 0 {
+        g.dim = vec.len();
     }
-
-    // domain + temporal
-    let pairs: Vec<(String, bool, bool)> = g
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(j, _)| *j != idx)
-        .map(|(_, o)| {
-            let same_host = match (&host, o.url.as_deref().and_then(host_of)) {
-                (Some(h), Some(oh)) => *h == oh,
-                _ => false,
-            };
-            let near = created.abs_diff(o.created) <= TEMPORAL_WINDOW_SECS;
-            (o.id.clone(), same_host, near)
-        })
-        .collect();
-    for (oid, same_host, near) in pairs {
-        if same_host {
-            upsert_edge(g, &id, &oid, EdgeKind::Domain, 0.5);
-        } else if near {
-            upsert_edge(g, &id, &oid, EdgeKind::Temporal, 0.3);
-        }
+    if vec.len() != g.dim {
+        return; // model dimension mismatch — skip
     }
+    g.nodes[idx].embed = Some(vec);
+    // Fresh links from the new meaning (clear any stale semantic edges first).
+    g.edges
+        .retain(|e| !((e.a == id || e.b == id) && e.kind == EdgeKind::Semantic));
+    autolink(&mut g, idx);
+    save(&app, &g);
+    drop(g);
+    let _ = app.emit("zro:mem-changed", ());
 }
 
 /// Drop weakest nodes when over cap (unpinned visits first, then oldest).
@@ -357,59 +374,46 @@ pub async fn mem_add(
     let body = body.unwrap_or_default();
     let now = now_secs();
     let url = url.filter(|u| !u.is_empty());
-
-    // Embed the meaningful text (best effort — never blocks node creation).
-    let embed_src = {
-        let host = url.as_deref().and_then(host_of).unwrap_or_default();
-        format!("{title}\n{body}\n{host}")
-    };
-    let vec = embed(&embed_src).await.ok();
-
-    let mut g = state.lock().unwrap();
-    ensure_loaded(&app, &mut g);
-
-    // Keep dimension consistent; drop mismatched embeds (model changed).
-    let vec = match vec {
-        Some(v) if g.dim == 0 => {
-            g.dim = v.len();
-            Some(v)
-        }
-        Some(v) if v.len() == g.dim => Some(v),
-        _ => None,
-    };
-
     let id = new_id();
-    g.nodes.push(MemNode {
-        id: id.clone(),
-        kind,
-        title,
-        body,
-        url,
-        image,
-        created: now,
-        updated: now,
-        done: false,
-        pinned: false,
-        visits: 0,
-        tags: Vec::new(),
-        embed: vec,
-    });
-    let idx = g.nodes.len() - 1;
-    autolink(&mut g, idx);
-    enforce_cap(&mut g);
-    // enforce_cap may have dropped nodes; look up by id for the returned view.
-    let out = g
-        .nodes
-        .iter()
-        .find(|n| n.id == id)
-        .map(node_view)
-        .ok_or("node evicted")?;
-    save(&app, &g);
+
+    // Hot path: insert + persist immediately, no embedding. The vector and its
+    // semantic links land shortly after via the background worker below.
+    let out = {
+        let mut g = state.lock().unwrap();
+        ensure_loaded(&app, &mut g);
+        g.nodes.push(MemNode {
+            id: id.clone(),
+            kind,
+            title,
+            body,
+            url,
+            image,
+            created: now,
+            updated: now,
+            done: false,
+            pinned: false,
+            visits: 0,
+            tags: Vec::new(),
+            embed: None,
+        });
+        enforce_cap(&mut g);
+        let out = g
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(node_view)
+            .ok_or("node evicted")?;
+        save(&app, &g);
+        out
+    };
+
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(embed_and_link(app2, id));
     Ok(out)
 }
 
 #[tauri::command]
-pub async fn mem_update(
+pub fn mem_update(
     app: AppHandle,
     state: tauri::State<'_, Mutex<MemGraph>>,
     id: String,
@@ -419,26 +423,10 @@ pub async fn mem_update(
     pinned: Option<bool>,
     tags: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
-    // Re-embed if text changed — snapshot new text first (no lock across await).
     let text_changed = title.is_some() || body.is_some();
-    let new_vec = if text_changed {
-        let (t, b, host) = {
-            let g = state.lock().unwrap();
-            let n = g.nodes.iter().find(|n| n.id == id).ok_or("not found")?;
-            (
-                title.clone().unwrap_or_else(|| n.title.clone()),
-                body.clone().unwrap_or_else(|| n.body.clone()),
-                n.url.as_deref().and_then(host_of).unwrap_or_default(),
-            )
-        };
-        embed(&format!("{t}\n{b}\n{host}")).await.ok()
-    } else {
-        None
-    };
 
     let mut g = state.lock().unwrap();
     ensure_loaded(&app, &mut g);
-    let dim = g.dim;
     let idx = g.nodes.iter().position(|n| n.id == id).ok_or("not found")?;
     {
         let n = &mut g.nodes[idx];
@@ -458,28 +446,16 @@ pub async fn mem_update(
             n.tags = t;
         }
         n.updated = now_secs();
-        if let Some(v) = new_vec {
-            if dim == 0 || v.len() == dim {
-                n.embed = Some(v);
-            }
-        }
-    }
-    if g.dim == 0 {
-        if let Some(v) = &g.nodes[idx].embed {
-            g.dim = v.len();
-        }
-    }
-    if text_changed {
-        // relink on new meaning: drop this node's semantic/temporal edges, redo
-        let nid = id.clone();
-        g.edges.retain(|e| {
-            !( (e.a == nid || e.b == nid)
-               && matches!(e.kind, EdgeKind::Semantic | EdgeKind::Temporal) )
-        });
-        autolink(&mut g, idx);
     }
     let out = node_view(&g.nodes[idx]);
     save(&app, &g);
+    drop(g);
+
+    // Re-embed + re-link off the hot path when the meaning changed.
+    if text_changed {
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(embed_and_link(app2, id));
+    }
     Ok(out)
 }
 
@@ -538,7 +514,8 @@ pub async fn mem_search(
     }
     // Try semantic first.
     let qvec = embed(&q).await.ok();
-    let g = state.lock().unwrap();
+    let mut g = state.lock().unwrap();
+    ensure_loaded(&app, &mut g);
 
     let mut scored: Vec<(String, f32)> = Vec::new();
     if let Some(qv) = qvec.as_ref().filter(|v| v.len() == g.dim && g.dim > 0) {

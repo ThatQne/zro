@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
   PointerSensor, useSensor, useSensors, DragOverEvent, DragMoveEvent, Modifier,
+  closestCenter,
 } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -261,8 +262,15 @@ export default function Sidebar() {
       placeTabs(sel, ovStr, null, true);
     } else if (overTab && !sel.includes(ovStr)) {
       // Dropped on a row (loose OR inside a folder) → land in that row's
-      // container, before/after it depending on which half the drag sat in
-      placeTabs(sel, overTab.folderId, ovStr, overSideRef.current === "below");
+      // container, before/after it depending on which half the drag sat in.
+      // Compute the side from the FINAL dragged rect here — a fast flick can
+      // end before handleDragMove fires for the last frame, leaving the cached
+      // overSideRef stale (the drop then lands on the wrong side / no-ops).
+      const a = active.rect.current.translated;
+      const below = a && over.rect
+        ? a.top + a.height / 2 > over.rect.top + over.rect.height / 2
+        : overSideRef.current === "below";
+      placeTabs(sel, overTab.folderId, ovStr, below);
     } else if (ovStr === "root-zone") {
       // Empty space → end of the loose list (pulls out of any folder)
       placeTabs(sel, undefined, null, true);
@@ -356,6 +364,10 @@ export default function Sidebar() {
         {expanded && (
           <DndContext
             sensors={sensors}
+            // closestCenter (not the default rectIntersection) always resolves a
+            // target during a reorder — a fast flick no longer ends with a null
+            // `over` and silently drops nothing.
+            collisionDetection={closestCenter}
             modifiers={[clampToFlyout]}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}

@@ -81,8 +81,11 @@ pub fn run() {
             browser::get_memory_info,
             browser::get_disk_usage,
             browser::show_tab_menu,
+            browser::show_tools_menu,
+            browser::show_tool_menu,
             browser::show_folder_menu,
             browser::show_extension_menu,
+            browser::save_image_as,
             browser::log_js,
             browser::clear_browsing_data,
             browser::clear_site_data,
@@ -93,6 +96,7 @@ pub fn run() {
             browser::install_crx_extension,
             browser::install_unpacked_extension,
             browser::list_extensions,
+            browser::reload_extension,
             browser::remove_extension,
             browser::set_extension_enabled,
             browser::get_extension_icon,
@@ -116,14 +120,15 @@ pub fn run() {
         ])
         // Native context-menu selections → frontend
         .on_menu_event(|app, event| {
-            let ctx = {
+            let (ctx, page) = {
                 let state = app.state::<Mutex<BrowserState>>();
                 let s = state.lock().unwrap();
-                s.menu_ctx.clone()
+                (s.menu_ctx.clone(), s.page_menu_ctx.clone())
             };
             let _ = app.emit("ctx-action", serde_json::json!({
                 "action": event.id().0,
                 "ctx": ctx,
+                "page": page,
             }));
         })
         .setup(|app| {

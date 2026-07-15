@@ -19,6 +19,9 @@ pub struct ExtensionInfo {
     /// manifest action/browser_action default_popup (relative path)
     pub popup: Option<String>,
     pub has_icon: bool,
+    /// Loaded from a user folder outside our store (dev extension) vs unpacked
+    /// from a Web Store CRX we manage — drives the reload UI + label.
+    pub unpacked: bool,
 }
 
 /// Registry entry — the manifest-derived bits keyed by WebView2's extension id.
@@ -44,6 +47,16 @@ fn extensions_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn registry_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(extensions_dir(app)?.join("registry.json"))
+}
+
+/// An extension is "unpacked" (a dev extension) when its source folder lives
+/// OUTSIDE our managed extensions dir — i.e. it came from Load-unpacked, not
+/// from a Web Store CRX we downloaded and unpacked ourselves.
+fn is_unpacked_folder(app: &AppHandle, folder: &str) -> bool {
+    match extensions_dir(app) {
+        Ok(dir) => !Path::new(folder).starts_with(&dir),
+        Err(_) => false,
+    }
 }
 
 fn load_registry(app: &AppHandle) -> Vec<ExtMeta> {
@@ -424,13 +437,15 @@ async fn install_folder(app: &AppHandle, folder: &Path) -> Result<ExtensionInfo,
     let (id, native_name) = add_extension_native(app, folder).await?;
     let (name, version, popup, icon) = read_manifest(folder);
     let display_name = if native_name.trim().is_empty() { name } else { native_name };
+    let folder_str = folder.to_string_lossy().to_string();
+    let unpacked = is_unpacked_folder(app, &folder_str);
     upsert_registry(app, ExtMeta {
         id: id.clone(),
         name: display_name.clone(),
         version: version.clone(),
         popup: popup.clone(),
         icon: icon.clone(),
-        folder: folder.to_string_lossy().to_string(),
+        folder: folder_str,
     });
     let _ = app.emit("extensions-changed", ());
     Ok(ExtensionInfo {
@@ -440,6 +455,7 @@ async fn install_folder(app: &AppHandle, folder: &Path) -> Result<ExtensionInfo,
         version,
         popup,
         has_icon: icon.is_some(),
+        unpacked,
     })
 }
 
@@ -459,6 +475,7 @@ async fn existing_extension(app: &AppHandle, ext_id: &str) -> Option<ExtensionIn
         version: meta.map(|m| m.version.clone()).unwrap_or_default(),
         popup: meta.and_then(|m| m.popup.clone()),
         has_icon: meta.map(|m| m.icon.is_some()).unwrap_or(false),
+        unpacked: meta.map(|m| is_unpacked_folder(app, &m.folder)).unwrap_or(false),
         id,
         enabled,
     })
@@ -489,16 +506,9 @@ pub(crate) async fn install_crx_file(app: &AppHandle, crx_path: &Path) -> Result
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-/// Download the CRX for a Web Store extension id (Chrome UA — Google's
-/// endpoint serves any client with a valid prodversion) and install it.
-#[tauri::command]
-pub async fn install_crx_extension(app: AppHandle, ext_id: String) -> Result<ExtensionInfo, String> {
-    if ext_id.len() != 32 || !ext_id.chars().all(|c| c.is_ascii_lowercase()) {
-        return Err("invalid extension id".into());
-    }
-    if let Some(info) = existing_extension(&app, &ext_id).await {
-        return Ok(info);
-    }
+/// Fetch the current CRX for a Web Store id (Chrome UA — Google's endpoint
+/// serves any client with a valid prodversion). Returns the raw CRX bytes.
+async fn download_crx(ext_id: &str) -> Result<Vec<u8>, String> {
     let url = format!(
         "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=126.0.6478.127&acceptformat=crx3&x=id%3D{ext_id}%26uc"
     );
@@ -517,9 +527,57 @@ pub async fn install_crx_extension(app: AppHandle, ext_id: String) -> Result<Ext
     if !bytes.starts_with(b"Cr24") {
         return Err("not available on the Chrome Web Store".into());
     }
+    Ok(bytes.to_vec())
+}
+
+/// Download the CRX for a Web Store extension id and install it.
+#[tauri::command]
+pub async fn install_crx_extension(app: AppHandle, ext_id: String) -> Result<ExtensionInfo, String> {
+    if ext_id.len() != 32 || !ext_id.chars().all(|c| c.is_ascii_lowercase()) {
+        return Err("invalid extension id".into());
+    }
+    if let Some(info) = existing_extension(&app, &ext_id).await {
+        return Ok(info);
+    }
+    let bytes = download_crx(&ext_id).await?;
     let dest = extensions_dir(&app)?.join(&ext_id);
     unpack_crx(&bytes, &dest)?;
     install_folder(&app, &dest).await
+}
+
+/// Reload an already-installed extension so code changes take effect.
+///   · Unpacked (dev) → re-read its source folder — the equivalent of Chrome's
+///     reload button after you rebuild.
+///   · Web Store → re-fetch the latest CRX and unpack it; a network failure is
+///     non-fatal, it falls back to reloading the local copy.
+/// Either way the stale instance is removed and re-added to WebView2.
+#[tauri::command]
+pub async fn reload_extension(app: AppHandle, ext_id: String) -> Result<ExtensionInfo, String> {
+    let meta = load_registry(&app)
+        .into_iter()
+        .find(|m| m.id == ext_id)
+        .ok_or("extension not in registry")?;
+    let folder = PathBuf::from(&meta.folder);
+    let ext_dir = extensions_dir(&app)?;
+    let from_store = folder.starts_with(&ext_dir) && is_webstore_id(&ext_id);
+
+    // Store copy → pull the current CRX so reload also updates it. Offline /
+    // fetch failure just reloads whatever is already unpacked on disk.
+    if from_store {
+        match download_crx(&ext_id).await {
+            Ok(bytes) => unpack_crx(&bytes, &folder)?,
+            Err(_) => { /* keep the local unpack */ }
+        }
+    }
+
+    if !folder.join("manifest.json").is_file() {
+        return Err(format!("source folder missing: {}", folder.display()));
+    }
+
+    // Drop the stale instance first — re-adding an id WebView2 still holds can
+    // no-op and skip the new code. "not installed" here is harmless.
+    let _ = mutate_extension_native(&app, &ext_id, ExtAction::Remove).await;
+    install_folder(&app, &folder).await
 }
 
 /// Native folder picker → install the chosen unpacked extension in place.
@@ -553,6 +611,7 @@ pub async fn list_extensions(app: AppHandle) -> Result<Vec<ExtensionInfo>, Strin
                 version: meta.map(|m| m.version.clone()).unwrap_or_default(),
                 popup: meta.and_then(|m| m.popup.clone()),
                 has_icon: meta.map(|m| m.icon.is_some()).unwrap_or(false),
+                unpacked: meta.map(|m| is_unpacked_folder(&app, &m.folder)).unwrap_or(false),
                 id,
                 enabled,
             }

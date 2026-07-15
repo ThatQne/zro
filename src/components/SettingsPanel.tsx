@@ -8,7 +8,7 @@ import {
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { useBrowserStore, Settings, hashPasscode, FOLDER_COLORS } from "../store/tabs";
-import { useExtStore } from "../store/extensions";
+import { useExtStore, Extension } from "../store/extensions";
 import CookieEditor from "./CookieEditor";
 
 interface Props {
@@ -59,7 +59,7 @@ export default function SettingsPanel({ onClose }: Props) {
         {/* Extensions — top section */}
         <ExtensionsSection />
 
-        <div style={{ padding: "4px 14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ padding: "14px 14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
           <Card icon={<Search size={12} />} title="Search Engine">
             <div style={{ display: "flex", gap: 4 }}>
               {(["google", "duckduckgo", "bing"] as const).map((e) => (
@@ -149,9 +149,7 @@ export default function SettingsPanel({ onClose }: Props) {
             />
             <div style={{ height: 12 }} />
             <IncognitoLockRow />
-            <div style={{ height: 12 }} />
-            <ClearDataSection />
-            <Hint>Browsing history is cleared from the History panel (Ctrl+H).</Hint>
+            <Hint>Clear cookies, cache & site data from the History panel (Ctrl+H).</Hint>
           </Card>
 
           <Card icon={<KeyRound size={12} />} title="Passwords" defaultOpen={false}>
@@ -376,8 +374,11 @@ function ProfilesSection() {
 // ── Extensions ────────────────────────────────────────────────────────────────
 
 function ExtensionsSection() {
-  const { items, pinned, icons, loading, error, autoErrors, refresh, autoInstall, installUnpacked, remove, setEnabled, togglePin } = useExtStore();
-  const [open, setOpen] = useState(true);
+  const { items, pinned, icons, loading, error, autoErrors, reloading, refresh, reload, autoInstall, installUnpacked, remove, setEnabled, togglePin } = useExtStore();
+  // Collapse state persists across panel closes AND restarts (matches Card).
+  const [open, setOpenRaw] = useState(() => localStorage.getItem("zro-card:Extensions") !== "0");
+  const setOpen = (fn: (v: boolean) => boolean) =>
+    setOpenRaw((v) => { const next = fn(v); localStorage.setItem("zro-card:Extensions", next ? "1" : "0"); return next; });
   const { tabs, activeTabId } = useBrowserStore();
   const activeUrl = tabs.find((t) => t.id === activeTabId)?.url;
 
@@ -455,46 +456,17 @@ function ExtensionsSection() {
               )}
 
               {items.map((ext) => (
-                <div
+                <ExtRow
                   key={ext.id}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 8, padding: "7px 8px",
-                    borderRadius: 8, background: "rgba(255,255,255,0.025)",
-                    border: "1px solid rgba(255,255,255,0.05)",
-                    opacity: ext.enabled ? 1 : 0.5,
-                  }}
-                >
-                  <span style={{ width: 18, height: 18, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    {icons[ext.id]
-                      ? <img src={icons[ext.id]} alt="" style={{ width: 18, height: 18, borderRadius: 4 }} />
-                      : <Puzzle size={13} color="#555" />}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {ext.name}
-                    </div>
-                    <div style={{ fontSize: 8.5, color: "#3a3a3a" }}>
-                      {ext.version ? `v${ext.version}` : ext.id.slice(0, 8)}{!ext.enabled && " · disabled"}
-                    </div>
-                  </div>
-                  <IconBtn
-                    active={pinned.includes(ext.id)}
-                    onClick={() => togglePin(ext.id)}
-                    title={pinned.includes(ext.id) ? "Unpin from toolbar" : "Pin to toolbar"}
-                  >
-                    {pinned.includes(ext.id) ? <Pin size={12} /> : <PinOff size={12} />}
-                  </IconBtn>
-                  <IconBtn
-                    active={ext.enabled}
-                    onClick={() => setEnabled(ext.id, !ext.enabled)}
-                    title={ext.enabled ? "Disable" : "Enable"}
-                  >
-                    <Power size={12} />
-                  </IconBtn>
-                  <IconBtn onClick={() => remove(ext.id)} title="Remove" danger>
-                    <Trash2 size={12} />
-                  </IconBtn>
-                </div>
+                  ext={ext}
+                  icon={icons[ext.id]}
+                  pinned={pinned.includes(ext.id)}
+                  reloading={!!reloading[ext.id]}
+                  onReload={() => reload(ext.id)}
+                  onTogglePin={() => togglePin(ext.id)}
+                  onSetEnabled={() => setEnabled(ext.id, !ext.enabled)}
+                  onRemove={() => remove(ext.id)}
+                />
               ))}
 
               <button
@@ -512,6 +484,78 @@ function ExtensionsSection() {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/** One extension row — its action buttons (reload / pin / enable / remove)
+ *  stay hidden until you hover the row, so the list reads clean at a glance. */
+function ExtRow({ ext, icon, pinned, reloading, onReload, onTogglePin, onSetEnabled, onRemove }: {
+  ext: Extension;
+  icon?: string;
+  pinned: boolean;
+  reloading: boolean;
+  onReload: () => void;
+  onTogglePin: () => void;
+  onSetEnabled: () => void;
+  onRemove: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  // Keep buttons visible while a reload spins even if the pointer leaves.
+  const show = hover || reloading;
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        position: "relative",
+        display: "flex", alignItems: "center", gap: 8, padding: "7px 8px",
+        borderRadius: 8, background: "rgba(255,255,255,0.025)",
+        border: "1px solid rgba(255,255,255,0.05)",
+        opacity: ext.enabled ? 1 : 0.5,
+      }}
+    >
+      <span style={{ width: 18, height: 18, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {icon
+          ? <img src={icon} alt="" style={{ width: 18, height: 18, borderRadius: 4 }} />
+          : <Puzzle size={13} color="#555" />}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 5 }}>
+          {ext.name}
+          {ext.unpacked && (
+            <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: 0.3, color: "#c98a3a", background: "rgba(201,138,58,0.14)", border: "1px solid rgba(201,138,58,0.28)", borderRadius: 4, padding: "1px 4px", flexShrink: 0 }}>
+              UNPACKED
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 8.5, color: "#3a3a3a" }}>
+          {ext.version ? `v${ext.version}` : ext.id.slice(0, 8)}{!ext.enabled && " · disabled"}
+        </div>
+      </div>
+      {/* Buttons overlay the row's right edge only while hovered (or reloading),
+          so the full extension name shows at rest instead of being clipped.
+          Solid background (the row's own effective colour) so any title text
+          underneath is fully covered, not showing through. */}
+      <div style={{
+        position: "absolute", right: 1, top: 1, bottom: 1, borderRadius: 7,
+        display: "flex", gap: 2, alignItems: "center", padding: "0 7px 0 10px",
+        background: "#161617",
+        opacity: show ? 1 : 0, pointerEvents: show ? "auto" : "none", transition: "opacity 0.12s",
+      }}>
+        <IconBtn onClick={onReload} title={ext.unpacked ? "Reload from source folder" : "Refresh (re-fetch latest)"}>
+          <RefreshCw size={12} className={reloading ? "animate-spin" : ""} />
+        </IconBtn>
+        <IconBtn active={pinned} onClick={onTogglePin} title={pinned ? "Unpin from toolbar" : "Pin to toolbar"}>
+          {pinned ? <Pin size={12} /> : <PinOff size={12} />}
+        </IconBtn>
+        <IconBtn active={ext.enabled} onClick={onSetEnabled} title={ext.enabled ? "Disable" : "Enable"}>
+          <Power size={12} />
+        </IconBtn>
+        <IconBtn onClick={onRemove} title="Remove" danger>
+          <Trash2 size={12} />
+        </IconBtn>
+      </div>
     </div>
   );
 }
@@ -587,7 +631,6 @@ function IncognitoLockRow() {
   const { settings, setSettings } = useBrowserStore();
   const [showPass, setShowPass] = useState(false);
   const [pass, setPass] = useState("");
-  const [helloState, setHelloState] = useState<"idle" | "ok" | "fail">("idle");
 
   // Changing (or clearing) an EXISTING passcode requires proving you know it
   // first — Settings has no lock of its own, so without this gate anyone at
@@ -661,16 +704,6 @@ function IncognitoLockRow() {
     setVerifyHelloBusy(false);
   }
 
-  async function testHello() {
-    try {
-      const ok = await invoke<boolean>("verify_identity", { reason: "Test Windows Hello" });
-      setHelloState(ok ? "ok" : "fail");
-    } catch {
-      setHelloState("fail");
-    }
-    setTimeout(() => setHelloState("idle"), 2500);
-  }
-
   const passValid = /^\d{4,6}$/.test(pass);
 
   function savePass() {
@@ -695,20 +728,6 @@ function IncognitoLockRow() {
       />
       {settings.incognitoLock && (
         <div style={{ marginTop: 8, marginLeft: 19, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <button
-              onClick={testHello}
-              style={{
-                display: "flex", alignItems: "center", gap: 5, padding: "5px 9px", borderRadius: 5, cursor: "pointer",
-                background: "rgba(150,80,220,0.12)", border: "1px solid rgba(150,80,220,0.3)", color: "#b088e0", fontSize: 10,
-              }}
-            >
-              <Fingerprint size={11} /> Test Windows Hello
-            </button>
-            {helloState === "ok" && <span style={{ fontSize: 10, color: "#5aa06a" }}>✓ works</span>}
-            {helloState === "fail" && <span style={{ fontSize: 10, color: "#c96a6a" }}>unavailable</span>}
-          </div>
-
           {!verifying && !showPass && (
             <button
               onClick={openEditor}
@@ -793,7 +812,7 @@ function IncognitoLockRow() {
 
 // ── Clear data ────────────────────────────────────────────────────────────────
 
-function ClearDataSection() {
+export function ClearDataSection() {
   const { tabs, activeTabId } = useBrowserStore();
   const activeUrl = tabs.find((t) => t.id === activeTabId)?.url ?? "";
   const host = (() => { try { return new URL(activeUrl).hostname; } catch { return ""; } })();
@@ -992,12 +1011,64 @@ function PasswordsSection() {
   const [q, setQ] = useState("");
   const [shown, setShown] = useState<Record<string, string>>({}); // id → plaintext
   const [copied, setCopied] = useState<string | null>(null);
+  // Saved logins are sensitive — the whole list stays hidden behind a Windows
+  // Hello (fingerprint / face / PIN) check. Nothing is fetched until unlocked.
+  const [unlocked, setUnlocked] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
 
-  useEffect(() => {
-    invoke<SavedPassword[]>("list_passwords")
-      .then(setRows)
-      .catch((e) => setErr(String(e)));
-  }, []);
+  async function unlock() {
+    setUnlocking(true);
+    setErr(null);
+    try {
+      const ok = await invoke<boolean>("verify_identity", {
+        reason: "View your saved passwords",
+      });
+      if (!ok) { setUnlocking(false); return; } // user cancelled
+      setUnlocked(true);
+      const list = await invoke<SavedPassword[]>("list_passwords");
+      setRows(list);
+    } catch (e) {
+      // Hello not configured on this PC — the OS account already scopes the
+      // encrypted store to this user, so fall through rather than hard-lock.
+      const msg = String(e);
+      if (/hello|unavailable|only supported/i.test(msg)) {
+        setUnlocked(true);
+        invoke<SavedPassword[]>("list_passwords").then(setRows).catch((x) => setErr(String(x)));
+      } else {
+        setErr(msg);
+      }
+    } finally {
+      setUnlocking(false);
+    }
+  }
+
+  function lock() {
+    setUnlocked(false);
+    setRows(null);
+    setShown({});
+    setQ("");
+  }
+
+  if (!unlocked) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "18px 8px 8px" }}>
+        <div style={{ width: 40, height: 40, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(79,128,245,0.1)", border: "1px solid rgba(79,128,245,0.25)" }}>
+          <Lock size={18} color="#7a9cf5" />
+        </div>
+        <div style={{ fontSize: 11, color: "#8a8a8a", textAlign: "center", lineHeight: 1.5, maxWidth: 220 }}>
+          Saved logins are stored <strong style={{ color: "#aaa" }}>encrypted</strong> (AES-256-GCM, keyed to your Windows account). Verify with Windows Hello to view them.
+        </div>
+        <button
+          onClick={unlock}
+          disabled={unlocking}
+          style={{ ...primaryBtn, padding: "8px 16px", marginTop: 2, opacity: unlocking ? 0.6 : 1 }}
+        >
+          <Fingerprint size={13} /> {unlocking ? "Waiting for Hello…" : "Unlock with Windows Hello"}
+        </button>
+        {err && <Hint>Couldn't verify: {err}</Hint>}
+      </div>
+    );
+  }
 
   async function reveal(id: string) {
     if (shown[id] !== undefined) {
@@ -1035,19 +1106,24 @@ function PasswordsSection() {
 
   return (
     <div>
-      <div style={{ position: "relative", marginBottom: 8 }}>
-        <Search size={11} style={{ position: "absolute", left: 8, top: 8, color: "#4a4a4a" }} />
-        <input
-          value={q}
-          placeholder={`Search ${rows.length} password${rows.length === 1 ? "" : "s"}`}
-          onChange={(e) => setQ(e.target.value)}
-          spellCheck={false}
-          style={{
-            width: "100%", fontSize: 11, color: "#aaa",
-            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)",
-            borderRadius: 5, padding: "6px 8px 6px 24px",
-          }}
-        />
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+        <div style={{ position: "relative", flex: 1 }}>
+          <Search size={11} style={{ position: "absolute", left: 8, top: 8, color: "#4a4a4a" }} />
+          <input
+            value={q}
+            placeholder={`Search ${rows.length} password${rows.length === 1 ? "" : "s"}`}
+            onChange={(e) => setQ(e.target.value)}
+            spellCheck={false}
+            style={{
+              width: "100%", fontSize: 11, color: "#aaa",
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)",
+              borderRadius: 5, padding: "6px 8px 6px 24px",
+            }}
+          />
+        </div>
+        <IconBtn title="Lock again" onClick={lock}>
+          <Lock size={12} />
+        </IconBtn>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 260, overflowY: "auto" }}>
@@ -1088,7 +1164,7 @@ function PasswordsSection() {
         })}
         {filtered.length === 0 && <Hint>No matches.</Hint>}
       </div>
-      <Hint>Your saved logins, decrypted locally with your Windows account. Read-only.</Hint>
+      <Hint>Stored encrypted (AES-256-GCM), decrypted locally with your Windows account only when you reveal one. Read-only.</Hint>
     </div>
   );
 }

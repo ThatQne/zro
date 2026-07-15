@@ -10,6 +10,8 @@ export interface Extension {
   version: string;
   popup: string | null;
   has_icon: boolean;
+  /** Dev extension loaded from a user folder (vs a Web Store CRX we manage) */
+  unpacked: boolean;
 }
 
 interface ExtStore {
@@ -26,8 +28,11 @@ interface ExtStore {
   attempted: Record<string, true>;
   /** Per-id failure reason, kept around so the UI can show why without a button. */
   autoErrors: Record<string, string>;
+  /** Ids currently mid-reload — spins the reload button. */
+  reloading: Record<string, true>;
 
   refresh: () => Promise<void>;
+  reload: (extId: string) => Promise<void>;
   installCrx: (extId: string) => Promise<void>;
   /** Fire-and-forget: installs `extId` once per session, no button needed. */
   autoInstall: (extId: string) => void;
@@ -48,6 +53,7 @@ export const useExtStore = create<ExtStore>()(
       error: null,
       attempted: {},
       autoErrors: {},
+      reloading: {},
 
       refresh: async () => {
         set({ loading: true });
@@ -69,6 +75,21 @@ export const useExtStore = create<ExtStore>()(
           set((s) => ({ pinned: s.pinned.filter((p) => ids.has(p)) }));
         } catch (e) {
           set({ loading: false, error: String(e) });
+        }
+      },
+
+      reload: async (extId) => {
+        set((s) => ({ reloading: { ...s.reloading, [extId]: true }, error: null }));
+        try {
+          await invoke<Extension>("reload_extension", { extId });
+          await get().refresh();
+        } catch (e) {
+          set({ error: String(e) });
+        } finally {
+          set((s) => {
+            const { [extId]: _drop, ...rest } = s.reloading;
+            return { reloading: rest };
+          });
         }
       },
 
