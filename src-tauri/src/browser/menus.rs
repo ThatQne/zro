@@ -184,6 +184,7 @@ pub fn show_page_menu_now(app: &AppHandle) {
             menu = menu
                 .item(&MenuItemBuilder::with_id("page:open-image", "Open Image in New Tab").build(app)?)
                 .item(&save_sub)
+                .item(&MenuItemBuilder::with_id("page:copy-image-data", "Copy Image").build(app)?)
                 .item(&MenuItemBuilder::with_id("page:copy-image", "Copy Image Address").build(app)?)
                 .separator();
         }

@@ -28,6 +28,10 @@ turbovec = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 rfd = "0.15"
 base64 = "0.22"
+# Host-side clipboard: navigator.clipboard in the UI webview rejects when our
+# native right-click menu had focus, so copy ran through here instead. Also
+# lets "Copy Image" put the actual bitmap on the clipboard, not just the URL.
+arboard = "3"
 # Right-click "Save Image As <format>": decode whatever the site served
 # (often webp) and re-encode to the format the user picked. Trimmed to the
 # codecs we offer so the binary stays lean.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   X, Search, Trash2, Clock, Globe, CalendarDays, List,
@@ -34,25 +34,36 @@ const dayKey = (ts: number) => new Date(ts).toDateString();
 export default function HistoryPanel({ onClose }: Props) {
   const { history, createTab, removeHistory, clearHistory, isIncognito } = useBrowserStore();
   const [query, setQuery] = useState("");
+  // Debounced copy of `query` — filtering runs over the whole history array, so
+  // a large history would jank on every keystroke without this.
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [view, setView] = useState<"list" | "calendar">("list");
   const [confirmClear, setConfirmClear] = useState(false);
   // Calendar → click a day → list filtered to that day
   const [dayFilter, setDayFilter] = useState<string | null>(null);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 140);
+    return () => clearTimeout(t);
+  }, [query]);
+
   const groups = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let filtered = q
-      ? history.filter((h) => h.title.toLowerCase().includes(q) || h.url.toLowerCase().includes(q))
-      : history;
-    if (dayFilter) filtered = filtered.filter((h) => dayKey(h.visitedAt) === dayFilter);
-    const map = new Map<string, HistoryEntry[]>();
-    for (const h of filtered.slice(0, 500)) {
+    const q = debouncedQuery.trim().toLowerCase();
+    // Cap the working set BEFORE grouping. Unfiltered history streams newest-
+    // first, so the first 500 is the visible window; a search still scans all
+    // (debounced) but only the first 500 matches are grouped/rendered.
+    const out = new Map<string, HistoryEntry[]>();
+    let count = 0;
+    for (const h of history) {
+      if (q && !(h.title.toLowerCase().includes(q) || h.url.toLowerCase().includes(q))) continue;
+      if (dayFilter && dayKey(h.visitedAt) !== dayFilter) continue;
       const label = dayLabel(h.visitedAt);
-      if (!map.has(label)) map.set(label, []);
-      map.get(label)!.push(h);
+      if (!out.has(label)) out.set(label, []);
+      out.get(label)!.push(h);
+      if (++count >= 500) break;
     }
-    return [...map.entries()];
-  }, [history, query, dayFilter]);
+    return [...out.entries()];
+  }, [history, debouncedQuery, dayFilter]);
 
   return (
     <motion.div

@@ -10,6 +10,7 @@
 //!
 //! Everything is glob re-exported so command paths stay `browser::<command>`.
 
+pub mod clipboard;
 pub mod cookies;
 pub mod default_browser;
 pub mod downloads;
@@ -26,6 +27,7 @@ pub mod shields;
 pub mod system;
 pub mod tabs;
 
+pub use clipboard::*;
 pub use cookies::*;
 pub use downloads::*;
 pub use extensions::*;

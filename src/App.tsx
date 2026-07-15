@@ -189,12 +189,15 @@ export default function App() {
       // Web-content right-click actions (see browser/menus.rs show_page_menu_now)
       if (action.startsWith("page:")) {
         const p = page ?? { link: "", src: "", selection: "", page_url: "" };
+        // Clipboard writes go through the host (invoke), NOT navigator.clipboard:
+        // the native menu just had focus, so the webview clipboard API rejects.
         if (action === "page:open-link" && p.link) s.createTab(p.link);
-        else if (action === "page:copy-link" && p.link) navigator.clipboard.writeText(p.link).catch(() => {});
+        else if (action === "page:copy-link" && p.link) invoke("set_clipboard_text", { text: p.link }).catch(console.error);
         else if (action === "page:open-image" && p.src) s.createTab(p.src);
-        else if (action === "page:copy-image" && p.src) navigator.clipboard.writeText(p.src).catch(() => {});
-        else if (action === "page:copy" && p.selection) navigator.clipboard.writeText(p.selection).catch(() => {});
-        else if (action === "page:copy-url" && p.page_url) navigator.clipboard.writeText(p.page_url).catch(() => {});
+        else if (action === "page:copy-image-data" && p.src) invoke("copy_image", { url: p.src }).catch(console.error);
+        else if (action === "page:copy-image" && p.src) invoke("set_clipboard_text", { text: p.src }).catch(console.error);
+        else if (action === "page:copy" && p.selection) invoke("set_clipboard_text", { text: p.selection }).catch(console.error);
+        else if (action === "page:copy-url" && p.page_url) invoke("set_clipboard_text", { text: p.page_url }).catch(console.error);
         else if (action === "page:search" && p.selection) s.createTab(searchUrl(p.selection, s.settings.searchEngine));
         else if (action === "page:back") s.goBack();
         else if (action === "page:forward") s.goForward();
@@ -218,7 +221,7 @@ export default function App() {
           .map((id) => s.tabs.find((x) => x.id === id)?.url)
           .filter(Boolean)
           .join("\n");
-        if (urls) navigator.clipboard.writeText(urls).catch(() => {});
+        if (urls) invoke("set_clipboard_text", { text: urls }).catch(console.error);
       } else if (action === "tab:reload") {
         for (const id of ctx) {
           const t = s.tabs.find((x) => x.id === id);

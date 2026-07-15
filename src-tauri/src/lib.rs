@@ -124,6 +124,8 @@ pub fn run() {
             browser::mem_ingest_visit,
             browser::default_browser::set_default_browser,
             browser::default_browser::is_default_browser_registered,
+            browser::set_clipboard_text,
+            browser::copy_image,
             agent::check_ollama,
             agent::check_mzcode,
             agent::list_ollama_models,
