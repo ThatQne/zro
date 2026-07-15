@@ -59,6 +59,22 @@
   nav .dl .arw { animation: dl-bob 1.8s ease-in-out infinite; }
   @keyframes dl-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(2px); } }
 
+  /* lucide icons (.icn) — size in em so they track nearby text */
+  .icn {
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none; line-height: 1; color: inherit;
+    font-size: 0.9em;              /* ~90% of parent font-size */
+    vertical-align: -0.12em;       /* optical align with text baseline */
+  }
+  .icn svg {
+    width: 1em !important; height: 1em !important;  /* beats lucide's default 24px attrs */
+    stroke: currentColor; fill: none;
+    stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .icn.tight { font-size: 0.78em; }
+  .icn.loose { font-size: 1em; }
+  nav .dl .icn { font-size: 11px; }          /* nav text is 12px */
+
   .hero {
     display: flex; flex-direction: column; justify-content: flex-end;
     padding: 92px 22px 30px; max-width: 920px; margin: 0 auto;
@@ -115,10 +131,12 @@
     font-family: var(--mono); font-size: 11px; color: var(--faint);
   }
   .chrome-bar .navbtns { display: flex; gap: 6px; flex: none; }
-  .chrome-bar .navbtns i {
+  .chrome-bar .navbtns .icn {
     width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 5px;
-    display: flex; align-items: center; justify-content: center; font-size: 10px;
+    color: var(--faint); font-size: 10px;   /* icon inside 22px button */
   }
+  .chrome-bar .winbtns { display: flex; gap: 5px; margin-left: auto; color: var(--faint); }
+  .chrome-bar .winbtns .icn { font-size: 10px; }
   .frecency-wrap { flex: 1; position: relative; max-width: 480px; }
   .frecency {
     display: flex; align-items: center; gap: 8px; height: 26px;
@@ -127,7 +145,7 @@
     transition: border-color .15s;
   }
   .frecency.on { border-color: var(--blue); }
-  .frecency .glyph { color: var(--faint); font-size: 10px; flex: none; }
+  .frecency .icn { color: var(--faint); flex: none; font-size: 10px; }
   .frecency .field { position: relative; flex: 1; height: 100%; display: flex; align-items: center; overflow: hidden; }
   .frecency input {
     position: absolute; inset: 0; width: 100%; background: transparent; border: 0; outline: 0;
@@ -146,7 +164,7 @@
     font-family: var(--mono); font-size: 11px; color: var(--dim); cursor: pointer;
   }
   .frow.sel { background: #181818; color: var(--fg); }
-  .frow .ic { width: 12px; flex: none; text-align: center; font-size: 9px; }
+  .frow .ic { width: 14px; flex: none; font-size: 10px; }
   .frow.t-tab .ic { color: #5fb37f; }
   .frow.t-his .ic { color: #a98fd0; }
   .frow.t-sug .ic { color: #7a8aa5; }
@@ -192,12 +210,12 @@
   }
   .fold.closed .ico { background: transparent; }
   .fold:not(.closed) .ico { background: var(--fc, #444); box-shadow: 0 0 8px -2px var(--fc, #444); }
-  .fold .chev { margin-left: auto; opacity: 0; font-size: 8px; color: var(--faint); transition: opacity .12s, transform .16s; }
+  .fold .chev { margin-left: auto; opacity: 0; color: var(--faint); font-size: 8px; transition: opacity .12s, transform .16s; }
   .rail.open .chev { opacity: 1; }
   .fold.closed .chev { transform: rotate(-90deg); }
   .kids { overflow: hidden; max-height: 180px; transition: max-height .18s; }
   .kids.hide { max-height: 0; }
-  .kids .rrow { margin-left: 12px; box-shadow: inset 2px 0 0 var(--fc, #444); border-radius: 0 6px 6px 0; }
+  .kids .rrow { margin-left: 0px; box-shadow: inset 2px 0 0 var(--fc, #444); border-radius: 0 6px 6px 0; }
 
   .page-area { flex: 1; padding: 24px 28px; position: relative; min-width: 0; }
   .page-area .overlay-tag {
@@ -234,16 +252,18 @@
     background: none; cursor: pointer;
   }
   .mem-tools button:hover { color: var(--fg); background: #141414; }
-  .mem-tools .mt-glyph { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: none; }
+  .mem-tools .icn { color: var(--faint); flex: none; font-size: 10px; }
   .mem-tools .mt-div { width: 1px; height: 16px; background: var(--line); flex: none; margin: 0 2px; }
   .mem-tools .mt-search { flex: 0 0 128px !important; }
   #memRestore {
     position: absolute; left: 12px; bottom: 54px; z-index: 6;
+    display: inline-flex; align-items: center; gap: 5px;
     font-family: var(--mono); font-size: 10px; color: var(--dim);
     background: #141414; border: 1px solid var(--line); border-radius: 6px;
     padding: 5px 10px; cursor: pointer; opacity: 0; transform: translateY(4px);
     pointer-events: none; transition: opacity .2s, transform .2s;
   }
+  #memRestore .icn { font-size: 10px; }
   #memRestore.on { opacity: 1; transform: translateY(0); pointer-events: auto; }
   #memRestore:hover { color: var(--fg); border-color: rgba(255,255,255,0.18); }
   .mem-legend {
@@ -333,15 +353,14 @@
 
 <nav>
   <a class="logo" href="#top"><img src="logo.png" alt="" /> zro</a>
-  <a class="dl" href="https://github.com/ThatQne/zro/releases/latest"><span class="arw">↓</span> download · 4.4&nbsp;mb</a>
+  <a class="dl" href="https://github.com/ThatQne/zro/releases/latest"><span class="icn arw"><i data-lucide="arrow-down"></i></span> download · 4.4&nbsp;mb</a>
 </nav>
 
 <header class="hero" id="top">
   <h1>zro<span class="cur"></span></h1>
   <div class="tag">
-    a browser that <b>remembers what you meant</b>, not just where you went —
-    a frecency bar, a semantic memory graph, and folders full of tabs that
-    sleep so your RAM doesn't.
+    the quest for the <b>fastest, most memeory efficient</b> browser possible —
+    using top of the line research. open source and community driven.
   </div>
   <div class="sub">
     <span>windows</span><span>4.4&nbsp;mb installer</span><span>webview2 core</span><span>rust · tauri</span><span>mit</span>
@@ -355,10 +374,14 @@
     <div class="feat-label"><b>frecency bar</b> + sidebar folders</div>
     <div class="frame chrome">
       <div class="chrome-bar">
-        <div class="navbtns"><i>‹</i><i>›</i><i>⟳</i></div>
+        <div class="navbtns">
+          <span class="icn"><i data-lucide="chevron-left"></i></span>
+          <span class="icn"><i data-lucide="chevron-right"></i></span>
+          <span class="icn"><i data-lucide="rotate-cw"></i></span>
+        </div>
         <div class="frecency-wrap">
           <div class="frecency" id="frBar">
-            <span class="glyph">⌕</span>
+            <span class="icn"><i data-lucide="search"></i></span>
             <div class="field">
               <span class="ghost" id="frGhost"></span>
               <input id="frInput" type="text" spellcheck="false" autocomplete="off" aria-label="frecency bar" />
@@ -366,7 +389,11 @@
           </div>
           <div class="frecency-drop" id="frDrop"></div>
         </div>
-        <span style="margin-left:auto;color:var(--faint)">— ▢ ✕</span>
+        <div class="winbtns">
+          <span class="icn"><i data-lucide="minus"></i></span>
+          <span class="icn"><i data-lucide="square"></i></span>
+          <span class="icn"><i data-lucide="x"></i></span>
+        </div>
       </div>
       <div class="chrome-body">
         <div class="rail" id="rail">
@@ -393,11 +420,11 @@
       <div class="mem-legend" id="memLegend"></div>
       <div id="memRestore"></div>
       <div class="mem-tools">
-        <span class="mt-glyph">✎</span>
+        <span class="icn"><i data-lucide="pen-line"></i></span>
         <input id="memAdd" type="text" spellcheck="false" placeholder="paste a note, a link, anything — enter to keep" aria-label="capture" />
         <button id="memBtn">keep</button>
         <span class="mt-div"></span>
-        <span class="mt-glyph">⌕</span>
+        <span class="icn"><i data-lucide="search"></i></span>
         <input id="memQ" class="mt-search" type="text" spellcheck="false" placeholder="search by meaning" aria-label="semantic search" />
       </div>
     </div>
@@ -454,7 +481,21 @@
   <a href="https://github.com/ThatQne/zro">github.com/ThatQne/zro</a>
 </footer>
 
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 <script>
+/* ========== icon helper ==========
+   data-lucide must live on an INNER <i> — lucide REPLACES that node with <svg>.
+   Keep an outer .icn span so our font-size / em sizing CSS still applies. */
+function icon(name, cls) {
+  return '<span class="icn' + (cls ? ' ' + cls : '') + '"><i data-lucide="' + name + '"></i></span>';
+}
+function paintIcons(root) {
+  if (typeof lucide === 'undefined') return;
+  /* only pass stroke-width — let CSS em rules control size, not lucide's 24px default */
+  lucide.createIcons({ root: root || document, attrs: { 'stroke-width': 1.75 } });
+}
+paintIcons();
+
 /* ========== frecency bar ========== */
 (function () {
   var HOSTS = [
@@ -490,16 +531,16 @@
   function build(q) {
     var lq = q.toLowerCase(), out = [];
     if (!q) {
-      TABS.forEach(function (t) { out.push({ k: "tab", main: t.t, meta: "switch", ic: "⇄" }); });
-      HOSTS.slice(0, 5).forEach(function (h) { out.push({ k: "his", main: h.h, meta: h.n + "×", wt: h.w, ic: "◷" }); });
+      TABS.forEach(function (t) { out.push({ k: "tab", main: t.t, meta: "switch", ic: "arrow-left-right" }); });
+      HOSTS.slice(0, 5).forEach(function (h) { out.push({ k: "his", main: h.h, meta: h.n + "×", wt: h.w, ic: "history" }); });
       return out;
     }
     TABS.filter(function (t) { return (t.t + t.h).toLowerCase().indexOf(lq) !== -1; })
-      .forEach(function (t) { out.push({ k: "tab", main: t.t, meta: "switch", ic: "⇄" }); });
+      .forEach(function (t) { out.push({ k: "tab", main: t.t, meta: "switch", ic: "arrow-left-right" }); });
     HOSTS.filter(function (h) { return h.h.indexOf(lq) !== -1; })
-      .slice(0, 4).forEach(function (h) { out.push({ k: "his", main: h.h, meta: h.n + "×", wt: h.w, ic: "◷" }); });
+      .slice(0, 4).forEach(function (h) { out.push({ k: "his", main: h.h, meta: h.n + "×", wt: h.w, ic: "history" }); });
     PHRASES.filter(function (p) { return p.indexOf(lq) === 0 && p !== lq; })
-      .slice(0, 2).forEach(function (p) { out.push({ k: "sug", main: p, meta: "search", ic: "⌕" }); });
+      .slice(0, 2).forEach(function (p) { out.push({ k: "sug", main: p, meta: "search", ic: "search" }); });
     return out.slice(0, 8);
   }
   function render() {
@@ -515,12 +556,13 @@
       var el = document.createElement("div");
       el.className = "frow t-" + r.k + (i === sel ? " sel" : "");
       var wt = r.wt ? '<span class="wt"><i style="width:' + Math.round(r.wt * 100) + '%"></i></span>' : "";
-      el.innerHTML = '<span class="ic">' + r.ic + '</span><span class="main"></span>' + wt + '<span class="meta">' + r.meta + '</span>';
+      el.innerHTML = '<span class="ic">' + icon(r.ic) + '</span><span class="main"></span>' + wt + '<span class="meta">' + r.meta + '</span>';
       el.querySelector(".main").textContent = r.main;
       el.addEventListener("mouseenter", function () { sel = i; paint(); });
       el.addEventListener("click", function () { pick(i); });
       drop.appendChild(el);
     });
+    paintIcons(drop);
     drop.classList.toggle("on", rows.length > 0 && document.activeElement === input);
   }
   function paint() {
@@ -599,7 +641,7 @@
       var head = document.createElement("div");
       head.className = "rrow fold" + (item.open ? "" : " closed");
       head.style.setProperty("--fc", item.color);
-      head.innerHTML = '<span class="ico"></span><span class="lab">' + item.name + '</span><span class="chev">▼</span>';
+      head.innerHTML = '<span class="ico"></span><span class="lab">' + item.name + '</span><span class="chev">' + icon("chevron-down") + '</span>';
       head.addEventListener("click", function () { item.open = !item.open; render(); });
       inner.appendChild(head);
       var kids = document.createElement("div");
@@ -608,6 +650,7 @@
       item.kids.forEach(function (k) { kids.appendChild(row(k, function () { go(k); })); });
       inner.appendChild(kids);
     });
+    paintIcons(inner);
   }
   function row(t, fn) {
     var el = document.createElement("div");
@@ -812,7 +855,8 @@
       .map(function (e) { var a = e[0] > i ? e[0]-1 : e[0], b = e[1] > i ? e[1]-1 : e[1]; return e.length > 2 ? [a,b,e[2]] : [a,b]; });
     nodes.splice(i, 1);
     focus = -1; hover = -1;
-    restoreEl.textContent = "↺ restore “" + (lastDeleted.length > 20 ? lastDeleted.slice(0,19)+"…" : lastDeleted) + "”";
+    restoreEl.innerHTML = icon("rotate-ccw") + ' restore “' + (lastDeleted.length > 20 ? lastDeleted.slice(0,19)+"…" : lastDeleted) + '”';
+    paintIcons(restoreEl);
     restoreEl.classList.add("on");
     clearTimeout(removeNode._t);
     removeNode._t = setTimeout(function () { restoreEl.classList.remove("on"); }, 4000);
