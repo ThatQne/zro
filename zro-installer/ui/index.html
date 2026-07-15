@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Install zro</title>
+<style>
+  :root {
+    --bg: #0a0a0b;
+    --panel: #101012;
+    --line: rgba(255,255,255,0.08);
+    --fg: #e9e9ec;
+    --dim: #8a8a92;
+    --faint: #4a4a52;
+    --blue: #4f80f5;
+    --green: #4fb56a;
+    --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, "Consolas", monospace;
+    --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: transparent; color: var(--fg);
+    font-family: var(--sans); font-weight: 400;
+    -webkit-font-smoothing: antialiased; user-select: none;
+    overflow: hidden;
+  }
+  /* Rounded, frameless shell — the OS window is transparent; this IS the app. */
+  .win {
+    position: fixed; inset: 8px; border-radius: 14px;
+    background:
+      radial-gradient(120% 90% at 50% -10%, rgba(79,128,245,0.10), transparent 60%),
+      var(--bg);
+    border: 1px solid var(--line);
+    box-shadow: 0 24px 70px -20px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.04);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* titlebar */
+  .bar {
+    height: 40px; flex: none; display: flex; align-items: center;
+    padding: 0 10px 0 16px; -webkit-app-region: drag;
+    border-bottom: 1px solid var(--line);
+  }
+  .bar .brand { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+  .bar .brand b { font-weight: 600; }
+  .bar .brand .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+  .bar .sp { flex: 1; }
+  .bar button {
+    -webkit-app-region: no-drag;
+    width: 30px; height: 26px; border: 0; border-radius: 7px; background: none;
+    color: var(--dim); cursor: pointer; font-size: 13px; display: grid; place-items: center;
+    transition: background .12s, color .12s;
+  }
+  .bar button:hover { background: rgba(255,255,255,0.06); color: var(--fg); }
+  .bar button.close:hover { background: #c0392b; color: #fff; }
+
+  /* body */
+  .body { flex: 1; padding: 26px 30px 22px; display: flex; flex-direction: column; }
+
+  .hero { display: flex; align-items: center; gap: 16px; margin-bottom: 22px; }
+  .logo {
+    width: 52px; height: 52px; border-radius: 13px; flex: none;
+    background: linear-gradient(150deg, #1b2740, #0d0f14);
+    border: 1px solid rgba(79,128,245,0.4);
+    display: grid; place-items: center; font-family: var(--mono);
+    font-size: 24px; font-weight: 600; color: var(--blue);
+    box-shadow: 0 0 24px -6px rgba(79,128,245,0.5);
+  }
+  .hero h1 { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+  .hero p { font-size: 12.5px; color: var(--dim); margin-top: 3px; }
+
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); margin-bottom: 7px; }
+  .path {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,0.02);
+    padding: 9px 10px 9px 12px;
+  }
+  .path input {
+    flex: 1; background: none; border: 0; outline: 0; color: var(--fg);
+    font-family: var(--mono); font-size: 12px; user-select: text;
+  }
+  .path button {
+    -webkit-app-region: no-drag; border: 1px solid var(--line); border-radius: 6px;
+    background: none; color: var(--dim); font-family: var(--mono); font-size: 11px;
+    padding: 5px 10px; cursor: pointer; transition: color .12s, border-color .12s;
+  }
+  .path button:hover { color: var(--fg); border-color: rgba(255,255,255,0.2); }
+
+  .opts { display: flex; flex-direction: column; gap: 9px; margin-bottom: 18px; }
+  .opt { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 12.5px; color: var(--dim); }
+  .opt .box {
+    width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid var(--faint);
+    display: grid; place-items: center; transition: background .12s, border-color .12s;
+  }
+  .opt.on .box { background: var(--blue); border-color: var(--blue); }
+  .opt.on .box::after { content: "✓"; font-size: 10px; color: #fff; }
+  .opt.on { color: var(--fg); }
+
+  /* progress / terminal log */
+  .stage { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .term {
+    flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 10px;
+    background: #08080a; padding: 12px 14px; overflow-y: auto;
+    font-family: var(--mono); font-size: 11px; line-height: 1.7; color: var(--dim);
+    display: none;
+  }
+  .term.show { display: block; }
+  .term .l { white-space: pre-wrap; }
+  .term .l .ok { color: var(--green); }
+  .term .l .b { color: var(--blue); }
+  .term .l .d { color: var(--faint); }
+  .term::-webkit-scrollbar { width: 8px; }
+  .term::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+
+  .meter { height: 4px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; margin-top: 14px; display: none; }
+  .meter.show { display: block; }
+  .meter i { display: block; height: 100%; width: 0%; border-radius: 3px;
+    background: linear-gradient(90deg, var(--blue), #6f9bff); transition: width .3s ease; }
+
+  /* footer / action */
+  .foot { flex: none; display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+  .foot .status { flex: 1; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .btn {
+    -webkit-app-region: no-drag; border: 0; border-radius: 9px; cursor: pointer;
+    font-family: var(--sans); font-weight: 500; font-size: 13px; padding: 11px 24px;
+    background: linear-gradient(180deg, #5a8bff, #4472e6); color: #fff;
+    box-shadow: 0 8px 22px -8px rgba(79,128,245,0.7);
+    transition: transform .1s, box-shadow .2s, opacity .2s;
+  }
+  .btn:hover { box-shadow: 0 10px 28px -8px rgba(79,128,245,0.9); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+  .btn.ghost { background: none; border: 1px solid var(--line); color: var(--dim); box-shadow: none; }
+  .btn.ghost:hover { color: var(--fg); border-color: rgba(255,255,255,0.22); }
+  .btn.done { background: linear-gradient(180deg, #55c06f, #43a85b); box-shadow: 0 8px 22px -8px rgba(79,181,106,0.7); }
+
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span><b>zro</b> installer</div>
+    <div class="sp"></div>
+    <button id="min" title="Minimize">–</button>
+    <button id="close" class="close" title="Close">✕</button>
+  </div>
+
+  <div class="body">
+    <div class="hero">
+      <div class="logo">z</div>
+      <div>
+        <h1 id="title">Install zro</h1>
+        <p id="subtitle">A fast, minimalist browser for Windows — 4.4 MB.</p>
+      </div>
+    </div>
+
+    <!-- setup view -->
+    <div id="setup">
+      <div class="field">
+        <label>Install location</label>
+        <div class="path">
+          <input id="path" spellcheck="false" />
+          <button id="browse">Browse</button>
+        </div>
+      </div>
+      <div class="opts">
+        <div class="opt on" data-opt="desktop"><span class="box"></span>Create desktop shortcut</div>
+        <div class="opt on" data-opt="startmenu"><span class="box"></span>Add to Start menu</div>
+        <div class="opt on" data-opt="launch"><span class="box"></span>Launch zro when done</div>
+      </div>
+    </div>
+
+    <!-- install view -->
+    <div class="stage">
+      <div class="term" id="term"></div>
+      <div class="meter" id="meter"><i id="bar"></i></div>
+    </div>
+
+    <div class="foot">
+      <div class="status" id="status">Ready to install.</div>
+      <button class="btn ghost hide" id="cancel">Cancel</button>
+      <button class="btn" id="install">Install</button>
+      <button class="btn done hide" id="finish">Launch zro</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>
