@@ -32,6 +32,19 @@ fn start_drag(window: tauri::Window) {
 
 pub fn run() {
     tauri::Builder::default()
+        // Single instance MUST be the first plugin. When zro is the default
+        // browser and already running, Windows starts a second `zro.exe "<url>"`;
+        // this forwards that argv to the live window (→ new tab) and exits the
+        // duplicate, instead of opening a whole second browser.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(w) = app.get_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            if let Some(url) = browser::default_browser::url_from_args(argv) {
+                browser::default_browser::open_url(app, &url);
+            }
+        }))
         // Auto-update stack: updater checks GitHub Releases + verifies the
         // minisign signature; process plugin supplies relaunch() after install.
         .plugin(tauri_plugin_process::init())
@@ -109,6 +122,8 @@ pub fn run() {
             browser::mem_unlink,
             browser::mem_search,
             browser::mem_ingest_visit,
+            browser::default_browser::set_default_browser,
+            browser::default_browser::is_default_browser_registered,
             agent::check_ollama,
             agent::check_mzcode,
             agent::list_ollama_models,
@@ -248,6 +263,18 @@ pub fn run() {
 
             // Set taskbar / title-bar icon (embedded at compile time)
             let _ = main_window.set_icon(tauri::include_image!("icons/icon.png"));
+
+            // Launched as the default browser with a URL (`zro.exe "<url>"`)?
+            // Hand it to the UI once the frontend listener is up (short delay —
+            // the second-instance path goes through the single-instance plugin
+            // instead, which always fires after the window exists).
+            if let Some(url) = browser::default_browser::url_from_args(std::env::args()) {
+                let app_url = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    browser::default_browser::open_url(&app_url, &url);
+                });
+            }
 
             // Devtools no longer auto-open — Ctrl+Shift+I toggles them on demand
             Ok(())

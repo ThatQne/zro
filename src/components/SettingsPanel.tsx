@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Settings as SettingsIcon, Shield, Search, Bot, Trash2, KeyRound, Cookie,
   Puzzle, Pin, PinOff, FolderOpen, Power, ChevronDown, EyeOff, Eye, Fingerprint,
-  Check, AlertCircle, Delete, Lock, Users, Moon, Plus, Copy, RefreshCw,
+  Check, AlertCircle, Delete, Lock, Users, Moon, Plus, Copy, RefreshCw, Globe,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
@@ -71,6 +71,10 @@ export default function SettingsPanel({ onClose }: Props) {
                 />
               ))}
             </div>
+          </Card>
+
+          <Card icon={<Globe size={12} />} title="Default Browser">
+            <DefaultBrowserSection />
           </Card>
 
           <Card icon={<Users size={12} />} title="Profiles" defaultOpen={false}>
@@ -175,6 +179,51 @@ export default function SettingsPanel({ onClose }: Props) {
 }
 
 // ── Updates ───────────────────────────────────────────────────────────────────
+
+/** Register zro as a default-browser candidate and bounce the user to
+ *  Windows' Default-apps page (Windows won't let an app self-assign it). */
+function DefaultBrowserSection() {
+  const [registered, setRegistered] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>("is_default_browser_registered").then(setRegistered).catch(() => {});
+  }, []);
+
+  async function makeDefault() {
+    setBusy(true);
+    try {
+      await invoke("set_default_browser");
+      setRegistered(true);
+    } catch (e) {
+      console.error(e);
+    }
+    setBusy(false);
+  }
+
+  return (
+    <>
+      <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5, marginBottom: 10 }}>
+        Open links and localhost in zro instead of Edge. Windows opens its
+        <b style={{ color: "#aaa", fontWeight: 500 }}> Default apps </b>
+        page — pick zro for <b style={{ color: "#aaa", fontWeight: 500 }}>http / https</b> to finish.
+      </div>
+      <button
+        onClick={makeDefault}
+        disabled={busy}
+        style={{ ...primaryBtn, padding: "8px 16px", opacity: busy ? 0.6 : 1, display: "flex", alignItems: "center", gap: 7, justifyContent: "center" }}
+      >
+        <Globe size={13} />
+        {busy ? "Opening Windows settings…" : "Set zro as default browser"}
+      </button>
+      {registered && (
+        <div style={{ fontSize: 10, color: "#5aa06a", marginTop: 8, display: "flex", alignItems: "center", gap: 5 }}>
+          <Check size={11} /> Registered — confirm the choice in Windows Default apps.
+        </div>
+      )}
+    </>
+  );
+}
 
 /** Manual update trigger. The actual check/download/install UI lives in the
  *  global <UpdateBanner/>; this just fires the `zro:check-update` event it

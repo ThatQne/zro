@@ -1153,6 +1153,19 @@ fn spawn_webview(
         //  - plain target=_blank links → new tab.
         .on_new_window(move |url, features| {
             let u = url.to_string();
+            // window.open() to an external app protocol (roblox-player://,
+            // steam://, ms-…): launch it detached and open NO window. The old
+            // "sized → Allow" path made WebView2 spawn a launcher popup that
+            // immediately self-closed — and that close was taking the main
+            // window down with it.
+            let lower = u.to_ascii_lowercase();
+            let is_web = lower.starts_with("http://") || lower.starts_with("https://")
+                || lower.starts_with("about:") || lower.starts_with("blob:")
+                || lower.starts_with("data:") || lower.starts_with("javascript:");
+            if !is_web && !u.is_empty() {
+                shell_open_detached(&u);
+                return tauri::webview::NewWindowResponse::Deny;
+            }
             if features.size().is_some() || is_auth_url(&u) {
                 return tauri::webview::NewWindowResponse::Allow;
             }

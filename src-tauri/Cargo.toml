@@ -40,6 +40,9 @@ aes-gcm = "0.10"
 # Auto-update: check GitHub Releases, verify minisign signature, install + relaunch.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Single instance: a link opened while zro is running forwards the URL to the
+# existing window (new tab) instead of spawning a second zro.
+tauri-plugin-single-instance = "2"
 
 [target."cfg(windows)".dependencies]
 webview2-com = "0.38"

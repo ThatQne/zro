@@ -11,6 +11,7 @@
 //! Everything is glob re-exported so command paths stay `browser::<command>`.
 
 pub mod cookies;
+pub mod default_browser;
 pub mod downloads;
 pub mod extensions;
 pub mod layout;
