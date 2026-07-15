@@ -19,9 +19,12 @@ signing-key*
 .env.*
 !.env.example
 
-# docs live on the website, not the repo — keep only the README
+# docs live on the website, not the repo — keep only these
 *.md
 !README.md
+!CONTRIBUTING.md
+!SECURITY.md
+!LICENSE-COMMERCIAL.md
 
 # local tooling / editor / os
 .claude/

@@ -2,8 +2,9 @@
 name = "zro"
 version = "0.1.0"
 description = "zro browser"
-authors = []
+authors = ["ThatQne"]
 edition = "2021"
+license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
 
 [lib]
 name = "zro_lib"
@@ -27,6 +28,10 @@ turbovec = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 rfd = "0.15"
 base64 = "0.22"
+# Right-click "Save Image As <format>": decode whatever the site served
+# (often webp) and re-encode to the format the user picked. Trimmed to the
+# codecs we offer so the binary stays lean.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 adblock = "0.13"
 # Read WebView2's own saved-password store (Chromium "Login Data" SQLite +
 # AES-256-GCM). bundled = compile SQLite in, no system dep.

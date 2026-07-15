@@ -6,7 +6,7 @@
 
 Native Rust shell over WebView2 — no bundled Chromium, no telemetry, no bloat.
 
-[**Download**](https://github.com/ThatQne/zro/releases/latest) · [**Website**](https://thatqne.github.io/zro) · MIT
+[**Download**](https://github.com/ThatQne/zro/releases/latest) · [**Website**](https://thatqne.github.io/zro) · AGPL-3.0 + Commercial
 
 </div>
 
@@ -38,3 +38,19 @@ git tag v0.1.1 && git push --tags
 ```
 
 Stack: Rust · Tauri v2 · React · TypeScript.
+
+## License
+
+zro is **dual-licensed**:
+
+- **[AGPL-3.0](./LICENSE)** — free and open source. Use it, fork it, contribute.
+  Any distributed or network-served derivative must also be open-sourced under
+  AGPL-3.0.
+- **[Commercial](./LICENSE-COMMERCIAL.md)** — a paid license that removes the
+  AGPL copyleft so you can build zro into a closed-source or proprietary
+  product. Email **thatqne@gmail.com**.
+
+Contributions are accepted under the CLA in [CONTRIBUTING.md](./CONTRIBUTING.md),
+which keeps the dual-license model possible. Not legal advice.
+
+If you find zro useful, you can [buy me a coffee](https://www.buymeacoffee.com/thatqne). ☕
