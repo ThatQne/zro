@@ -94,8 +94,6 @@ pub fn run() {
             browser::get_memory_info,
             browser::get_disk_usage,
             browser::show_tab_menu,
-            browser::show_tools_menu,
-            browser::show_tool_menu,
             browser::show_folder_menu,
             browser::show_extension_menu,
             browser::save_image_as,

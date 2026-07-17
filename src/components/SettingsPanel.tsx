@@ -4,10 +4,11 @@ import {
   X, Settings as SettingsIcon, Shield, Search, Bot, Trash2, KeyRound, Cookie,
   Puzzle, Pin, PinOff, FolderOpen, Power, ChevronDown, EyeOff, Eye, Fingerprint,
   Check, AlertCircle, Delete, Lock, Users, Moon, Plus, Copy, RefreshCw, Globe,
+  Network, Clock, Download, BarChart2, LayoutGrid,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
-import { useBrowserStore, Settings, hashPasscode, FOLDER_COLORS } from "../store/tabs";
+import { useBrowserStore, Settings, hashPasscode, FOLDER_COLORS, TOOL_KEYS } from "../store/tabs";
 import { useExtStore, Extension } from "../store/extensions";
 import CookieEditor from "./CookieEditor";
 
@@ -55,7 +56,10 @@ export default function SettingsPanel({ onClose }: Props) {
         </button>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      {/* scrollbarGutter stable: content growing past the fold (toggling a
+          card / reveal rows) otherwise pops a scrollbar in and shifts every
+          row left by its width. */}
+      <div style={{ flex: 1, overflowY: "auto", scrollbarGutter: "stable" }}>
         {/* Extensions — top section */}
         <ExtensionsSection />
 
@@ -71,6 +75,10 @@ export default function SettingsPanel({ onClose }: Props) {
                 />
               ))}
             </div>
+          </Card>
+
+          <Card icon={<LayoutGrid size={12} />} title="Toolbar">
+            <ToolbarGrid />
           </Card>
 
           <Card icon={<Globe size={12} />} title="Default Browser">
@@ -175,6 +183,63 @@ export default function SettingsPanel({ onClose }: Props) {
         </div>
       </div>
     </motion.div>
+  );
+}
+
+// ── Toolbar ───────────────────────────────────────────────────────────────────
+
+/** Compact grid of toolbar-tool toggles — which buttons show in the top bar.
+ *  Settings itself is always in the bar so nothing can be locked out. */
+function ToolbarGrid() {
+  const { settings, setSettings } = useBrowserStore();
+  const pinned = settings.pinnedTools ?? [];
+
+  const META: Record<string, { icon: React.ReactNode; label: string }> = {
+    shield: { icon: <Shield size={13} />, label: "Shields" },
+    incognito: { icon: <EyeOff size={13} />, label: "Incognito" },
+    memory: { icon: <Network size={13} />, label: "Memory" },
+    history: { icon: <Clock size={13} />, label: "History" },
+    downloads: { icon: <Download size={13} />, label: "Downloads" },
+    stats: { icon: <BarChart2 size={13} />, label: "Stats" },
+    ai: { icon: <Bot size={13} />, label: "AI" },
+  };
+
+  function toggle(key: string) {
+    setSettings({
+      pinnedTools: pinned.includes(key)
+        ? pinned.filter((k) => k !== key)
+        : [...pinned, key],
+    });
+  }
+
+  return (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
+        {TOOL_KEYS.map((key) => {
+          const on = pinned.includes(key);
+          const m = META[key];
+          return (
+            <button
+              key={key}
+              onClick={() => toggle(key)}
+              title={on ? `Hide ${m.label} from toolbar` : `Show ${m.label} in toolbar`}
+              style={{
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                padding: "7px 2px 5px", borderRadius: 7, cursor: "pointer",
+                background: on ? "rgba(79,128,245,0.12)" : "rgba(255,255,255,0.03)",
+                border: `1px solid ${on ? "rgba(79,128,245,0.45)" : "rgba(255,255,255,0.06)"}`,
+                color: on ? "#7ea3f7" : "#555",
+                transition: "background 0.12s, border-color 0.12s, color 0.12s",
+              }}
+            >
+              {m.icon}
+              <span style={{ fontSize: 8.5, letterSpacing: "0.02em" }}>{m.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <Hint>Toggle which tools show in the top bar. Settings always stays.</Hint>
+    </>
   );
 }
 

@@ -15,12 +15,30 @@ use tauri::{AppHandle, Emitter};
 
 const PROGID: &str = "zroHTML";
 
-/// A launch argument that's an http(s) URL (what Windows passes when zro is the
-/// default browser), if any. Skips the exe path and any flags.
+/// A launch argument that's openable (what Windows passes when zro is the
+/// default browser / "Open with"): an http(s)/file URL, or a local file path
+/// (double-clicked .html) which becomes a file:// URL. Skips the exe path and
+/// any flags.
 pub fn url_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
-    args.into_iter().skip(1).find(|a| {
+    args.into_iter().skip(1).find_map(|a| {
         let l = a.to_ascii_lowercase();
-        l.starts_with("http://") || l.starts_with("https://")
+        if l.starts_with("http://") || l.starts_with("https://") || l.starts_with("file://") {
+            return Some(a);
+        }
+        if a.starts_with('-') {
+            return None; // flag, not a document
+        }
+        // "Open with zro" hands us a bare filesystem path, not a URL.
+        let p = std::path::Path::new(&a);
+        if p.is_file() {
+            let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+            // canonicalize returns \\?\C:\… on Windows — strip the verbatim
+            // prefix or the file:// URL grows a bogus host.
+            let s = abs.to_string_lossy();
+            let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            return url::Url::from_file_path(s).ok().map(|u| u.to_string());
+        }
+        None
     })
 }
 

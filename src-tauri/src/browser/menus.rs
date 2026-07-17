@@ -14,48 +14,6 @@ pub struct FolderLite {
     pub name: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct ToolLite {
-    pub key: String,
-    pub label: String,
-}
-
-/// Overflow menu for the toolbar tools the user hasn't pinned. Each unpinned
-/// tool is a submenu: open it now, or pin it back to the bar. Selections come
-/// back as `tool:open:<key>` / `tool:pin:<key>` through on_menu_event.
-#[tauri::command]
-pub async fn show_tools_menu(app: AppHandle, tools: Vec<ToolLite>) -> Result<(), String> {
-    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-
-    let mut menu = MenuBuilder::new(&app);
-    for t in &tools {
-        let sub = SubmenuBuilder::new(&app, &t.label)
-            .item(&MenuItemBuilder::with_id(format!("tool:open:{}", t.key), "Open").build(&app).map_err(|e| e.to_string())?)
-            .item(&MenuItemBuilder::with_id(format!("tool:pin:{}", t.key), "Pin to Toolbar").build(&app).map_err(|e| e.to_string())?)
-            .build().map_err(|e| e.to_string())?;
-        menu = menu.item(&sub);
-    }
-    let menu = menu.build().map_err(|e| e.to_string())?;
-    let window = app.get_window("main").ok_or("no main window")?;
-    window.popup_menu(&menu).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Right-click on a pinned toolbar tool → unpin it into the overflow.
-/// Selection comes back as `tool:unpin:<key>`.
-#[tauri::command]
-pub async fn show_tool_menu(app: AppHandle, key: String, label: String) -> Result<(), String> {
-    use tauri::menu::{MenuBuilder, MenuItemBuilder};
-
-    let menu = MenuBuilder::new(&app)
-        .item(&MenuItemBuilder::with_id(format!("tool:unpin:{key}"), format!("Unpin {label} from Toolbar")).build(&app).map_err(|e| e.to_string())?)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let window = app.get_window("main").ok_or("no main window")?;
-    window.popup_menu(&menu).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn show_tab_menu(
     app: AppHandle,

@@ -4,8 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import {
   X, StickyNote, CheckSquare, Square, Link2, Image as ImageIcon, Clipboard,
   Globe, Search, Trash2, Pin, ExternalLink, List, Network, Plus, Circle,
-  Pencil, Check as CheckIcon, RotateCcw,
+  Pencil, Check as CheckIcon, RotateCcw, Copy as CopyIcon,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { useMemoryStore, MemNode, MemKind, MemEdge } from "../store/memory";
 import { useBrowserStore } from "../store/tabs";
 
@@ -100,7 +101,14 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
       const url = /^https?:\/\//i.test(text) ? text : "https://" + text;
       await add({ kind: "link", title: text.replace(/^https?:\/\//, ""), url });
     } else {
-      await add({ kind: "note", title: text });
+      // Big/multiline pastes: first line becomes the title, the FULL original
+      // text goes in body — so Copy gives back exactly what was pasted.
+      const first = text.split(/\r?\n/)[0].trim();
+      if (first.length < text.length || first.length > 120) {
+        await add({ kind: "note", title: first.slice(0, 120) || "Pasted text", body: text });
+      } else {
+        await add({ kind: "note", title: text });
+      }
     }
   }
 
@@ -346,6 +354,16 @@ function MemRow({
   const editable = n.kind === "note" || n.kind === "todo" || n.kind === "clip" || n.kind === "link";
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  // Body holds the full pasted text when there is one — copying returns
+  // exactly what went in. Links copy their URL, plain notes their title.
+  function copyText() {
+    if (n.kind === "image" && n.image) {
+      invoke("copy_image", { url: n.image }).catch(console.error);
+      return;
+    }
+    const text = n.body || n.url || n.title;
+    invoke("set_clipboard_text", { text }).catch(() => navigator.clipboard?.writeText(text));
+  }
   function startEdit(e: React.MouseEvent) { stop(e); setT(n.title); setB(n.body); setEditing(true); }
   function saveEdit() { onUpdate(n.id, { title: t.trim(), body: b.trim() }); setEditing(false); }
 
@@ -417,6 +435,7 @@ function MemRow({
           {score != null && <span style={{ fontSize: 9, color: "#4f80f5", fontFamily: "monospace" }}>{(score).toFixed(2)}</span>}
         </div>
         <div className="mem-actions" onClick={stop} style={{ gap: 1, marginTop: -2 }}>
+          <MiniBtn title="Copy" onClick={(e) => { stop(e); copyText(); }}><CopyIcon size={12} /></MiniBtn>
           {editable && <MiniBtn title="Edit" onClick={startEdit}><Pencil size={12} /></MiniBtn>}
           {n.url && <MiniBtn title="Open" onClick={(e) => { stop(e); open(); }}><ExternalLink size={12} /></MiniBtn>}
           <MiniBtn title={n.pinned ? "Unpin" : "Pin"} active={n.pinned} onClick={(e) => { stop(e); onUpdate(n.id, { pinned: !n.pinned }); }}><Pin size={12} /></MiniBtn>

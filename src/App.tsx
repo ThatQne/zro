@@ -4,10 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronLeft, ChevronRight, RotateCw, Settings as SettingsIcon,
-  Bot, BarChart2, EyeOff, Clock, Download, Minus, Square, X, Shield, Network, MoreHorizontal,
+  Bot, BarChart2, EyeOff, Clock, Download, Minus, Square, X, Shield, Network,
 } from "lucide-react";
 import { Puzzle } from "lucide-react";
-import { useBrowserStore, activeFolderId, TOOL_KEYS, searchUrl } from "./store/tabs";
+import { useBrowserStore, activeFolderId, searchUrl } from "./store/tabs";
 import { useDownloadsStore } from "./store/downloads";
 import { useExtStore } from "./store/extensions";
 import { trackOverlay } from "./store/overlays";
@@ -48,8 +48,11 @@ export default function App() {
   const [lockOpen, setLockOpen] = useState(false);
 
   // Entering incognito requires the unlock EVERY time (Windows Hello or
-  // passcode); exiting never does.
+  // passcode); exiting never does. Clicking the toolbar button while the
+  // lock is showing dismisses it — same spot toggles it back off, no mouse
+  // trip to the Cancel link.
   function requestIncognito() {
+    if (lockOpen) { setLockOpen(false); return; }
     const s = useBrowserStore.getState();
     if (s.isIncognito) { s.toggleIncognito(); return; }
     if (s.settings.incognitoLock) { setLockOpen(true); return; }
@@ -280,24 +283,6 @@ export default function App() {
         useExtStore.getState().togglePin(ctx[0]);
       } else if (action === "ext:remove") {
         useExtStore.getState().remove(ctx[0]);
-      } else if (action.startsWith("tool:")) {
-        const [, sub, key] = action.split(":");
-        if (sub === "pin" || sub === "unpin") {
-          const cur = s.settings.pinnedTools ?? [];
-          const next = sub === "pin"
-            ? Array.from(new Set([...cur, key]))
-            : cur.filter((k) => k !== key);
-          s.setSettings({ pinnedTools: next });
-        } else if (sub === "open") {
-          if (key === "incognito") {
-            if (!s.isIncognito) {
-              if (s.settings.incognitoLock) setLockOpen(true);
-              else s.toggleIncognito();
-            }
-          } else {
-            setPanel(key as PanelKind);
-          }
-        }
       }
 
       if (ctx.length > 1 && action.startsWith("tab:")) s.clearSelection();
@@ -340,24 +325,10 @@ export default function App() {
     setPanel((cur) => (cur === p ? null : p));
   }
 
-  // Toolbar pin system: pinned tools sit in the bar, the rest fold into a "⋯"
-  // overflow (native menu — a DOM dropdown would be occluded by the page
-  // webview). Settings is always shown and never unpinnable.
-  const TOOL_LABELS: Record<string, string> = {
-    shield: "Shields", incognito: "Incognito", memory: "Memory",
-    history: "History", downloads: "Downloads", stats: "Stats", ai: "AI",
-  };
+  // Toolbar visibility: which tool buttons show is a simple grid of toggles in
+  // Settings → Toolbar (settings.pinnedTools). Settings itself always shows.
   const pinnedTools = settings.pinnedTools ?? [];
   const isPinned = (k: string) => pinnedTools.includes(k);
-  const unpinnedTools = TOOL_KEYS.filter((k) => !isPinned(k));
-  const openOverflow = () =>
-    invoke("show_tools_menu", {
-      tools: unpinnedTools.map((k) => ({ key: k, label: TOOL_LABELS[k] })),
-    }).catch(() => {});
-  const toolCtx = (key: string) => (e: React.MouseEvent) => {
-    e.preventDefault();
-    invoke("show_tool_menu", { key, label: TOOL_LABELS[key] }).catch(() => {});
-  };
 
   return (
     <div
@@ -398,16 +369,15 @@ export default function App() {
         <div className="flex gap-0.5 no-drag">
           <PinnedExtensions />
           {isPinned("shield") && (
-            <ShieldBtn onClick={() => togglePanel("shield")} active={panel === "shield"} onContextMenu={toolCtx("shield")} />
+            <ShieldBtn onClick={() => togglePanel("shield")} active={panel === "shield"} />
           )}
           {isPinned("incognito") && (
             <NavBtn
               icon={<EyeOff size={13} />}
               onClick={requestIncognito}
-              title={isIncognito ? "Exit Incognito" : "Incognito"}
-              active={isIncognito}
+              title={isIncognito ? "Exit Incognito" : lockOpen ? "Cancel" : "Incognito"}
+              active={isIncognito || lockOpen}
               activeColor="rgba(150,80,220,0.6)"
-              onContextMenu={toolCtx("incognito")}
             />
           )}
           {isPinned("memory") && (
@@ -416,7 +386,6 @@ export default function App() {
               onClick={() => togglePanel("memory")}
               title="Memory (Ctrl+M)"
               active={panel === "memory"}
-              onContextMenu={toolCtx("memory")}
             />
           )}
           {isPinned("history") && (
@@ -425,7 +394,6 @@ export default function App() {
               onClick={() => togglePanel("history")}
               title="History (Ctrl+H)"
               active={panel === "history"}
-              onContextMenu={toolCtx("history")}
             />
           )}
           {isPinned("downloads") && (
@@ -435,7 +403,6 @@ export default function App() {
                 onClick={() => togglePanel("downloads")}
                 title="Downloads (Ctrl+J)"
                 active={panel === "downloads"}
-                onContextMenu={toolCtx("downloads")}
               />
               {(dlUnseen > 0 || dlActive) && panel !== "downloads" && (
                 <span style={{
@@ -449,17 +416,10 @@ export default function App() {
             </div>
           )}
           {isPinned("stats") && (
-            <NavBtn icon={<BarChart2 size={14} />} onClick={() => togglePanel("stats")} title="Stats" active={panel === "stats"} onContextMenu={toolCtx("stats")} />
+            <NavBtn icon={<BarChart2 size={14} />} onClick={() => togglePanel("stats")} title="Stats" active={panel === "stats"} />
           )}
           {isPinned("ai") && (
-            <NavBtn icon={<Bot size={14} />} onClick={() => togglePanel("ai")} title="AI" active={panel === "ai"} onContextMenu={toolCtx("ai")} />
-          )}
-          {unpinnedTools.length > 0 && (
-            <NavBtn
-              icon={<MoreHorizontal size={15} />}
-              onClick={openOverflow}
-              title={`More tools (${unpinnedTools.length})`}
-            />
+            <NavBtn icon={<Bot size={14} />} onClick={() => togglePanel("ai")} title="AI" active={panel === "ai"} />
           )}
           <NavBtn icon={<SettingsIcon size={13} />} onClick={() => togglePanel("settings")} title="Settings (Ctrl+,)" active={panel === "settings"} />
         </div>

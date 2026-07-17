@@ -5,76 +5,99 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Install zro</title>
 <style>
+  /* IBM Plex, bundled locally (OFL) — CSP blocks remote fonts and the
+     installer must look right offline anyway. Same faces the website loads. */
+  @font-face {
+    font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
+    src: url(fonts/plex-mono-400.woff2) format("woff2");
+  }
+  @font-face {
+    font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500;
+    src: url(fonts/plex-mono-500.woff2) format("woff2");
+  }
+  @font-face {
+    font-family: "IBM Plex Sans"; font-style: normal; font-weight: 100 700;
+    src: url(fonts/plex-sans-var.woff2) format("woff2");
+  }
+
+  /* Palette — mirrors site/index.html :root exactly. */
   :root {
-    --bg: #0a0a0b;
-    --panel: #101012;
+    --bg: #080808;
+    --panel: #0c0c0c;
     --line: rgba(255,255,255,0.08);
-    --fg: #e9e9ec;
-    --dim: #8a8a92;
-    --faint: #4a4a52;
+    --fg: #e8e8e8;
+    --dim: #888;
+    --faint: #4a4a4a;
     --blue: #4f80f5;
+    --amber: #d8a04a;
     --green: #4fb56a;
-    --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, "Consolas", monospace;
-    --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     background: transparent; color: var(--fg);
-    font-family: var(--sans); font-weight: 400;
+    font-family: var(--sans); font-weight: 300;
     -webkit-font-smoothing: antialiased; user-select: none;
     overflow: hidden;
   }
+  ::selection { background: #e8e8e8; color: #080808; }
+
   /* Rounded, frameless shell — the OS window is transparent; this IS the app. */
   .win {
-    position: fixed; inset: 8px; border-radius: 14px;
-    background:
-      radial-gradient(120% 90% at 50% -10%, rgba(79,128,245,0.10), transparent 60%),
-      var(--bg);
+    position: fixed; inset: 8px; border-radius: 12px;
+    background: var(--bg);
     border: 1px solid var(--line);
     box-shadow: 0 24px 70px -20px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.04);
     display: flex; flex-direction: column; overflow: hidden;
   }
 
-  /* titlebar */
+  /* titlebar — like the site nav: mono, tiny grayscale logo */
   .bar {
     height: 40px; flex: none; display: flex; align-items: center;
     padding: 0 10px 0 16px; -webkit-app-region: drag;
     border-bottom: 1px solid var(--line);
   }
-  .bar .brand { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
-  .bar .brand b { font-weight: 600; }
-  .bar .brand .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+  .bar .brand { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; font-weight: 500; }
+  .bar .brand img { width: 15px; height: 15px; filter: grayscale(1); opacity: 0.85; }
+  .bar .brand span { color: var(--faint); font-weight: 400; }
   .bar .sp { flex: 1; }
   .bar button {
     -webkit-app-region: no-drag;
-    width: 30px; height: 26px; border: 0; border-radius: 7px; background: none;
-    color: var(--dim); cursor: pointer; font-size: 13px; display: grid; place-items: center;
-    transition: background .12s, color .12s;
+    width: 30px; height: 26px; border: 0; border-radius: 6px; background: none;
+    color: var(--faint); cursor: pointer; font-size: 13px; display: grid; place-items: center;
+    transition: background .15s, color .15s;
   }
   .bar button:hover { background: rgba(255,255,255,0.06); color: var(--fg); }
-  .bar button.close:hover { background: #c0392b; color: #fff; }
+  .bar button.close:hover { background: rgba(192,57,43,0.85); color: #fff; }
 
   /* body */
   .body { flex: 1; padding: 26px 30px 22px; display: flex; flex-direction: column; }
 
   .hero { display: flex; align-items: center; gap: 16px; margin-bottom: 22px; }
   .logo {
-    width: 52px; height: 52px; border-radius: 13px; flex: none;
-    background: linear-gradient(150deg, #1b2740, #0d0f14);
-    border: 1px solid rgba(79,128,245,0.4);
-    display: grid; place-items: center; font-family: var(--mono);
-    font-size: 24px; font-weight: 600; color: var(--blue);
-    box-shadow: 0 0 24px -6px rgba(79,128,245,0.5);
+    width: 52px; height: 52px; border-radius: 12px; flex: none;
+    border: 1px solid var(--line); background: var(--panel);
+    display: grid; place-items: center;
   }
-  .hero h1 { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
-  .hero p { font-size: 12.5px; color: var(--dim); margin-top: 3px; }
+  .logo img { width: 34px; height: 34px; }
+  .hero h1 {
+    font-family: var(--mono); font-size: 22px; font-weight: 500; letter-spacing: -0.03em;
+  }
+  .hero h1 .cur {
+    display: inline-block; width: 0.45ch; height: 0.78em;
+    background: var(--fg); margin-left: 2px; vertical-align: -0.06em;
+    animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .hero p { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 5px; }
 
   .field { margin-bottom: 16px; }
-  .field label { display: block; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); margin-bottom: 7px; }
+  .field label { display: block; font-family: var(--mono); font-size: 10px; text-transform: lowercase; letter-spacing: 0.1em; color: var(--faint); margin-bottom: 7px; }
   .path {
     display: flex; align-items: center; gap: 8px;
-    border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,0.02);
+    border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,0.03);
     padding: 9px 10px 9px 12px;
   }
   .path input {
@@ -84,25 +107,25 @@
   .path button {
     -webkit-app-region: no-drag; border: 1px solid var(--line); border-radius: 6px;
     background: none; color: var(--dim); font-family: var(--mono); font-size: 11px;
-    padding: 5px 10px; cursor: pointer; transition: color .12s, border-color .12s;
+    padding: 5px 10px; cursor: pointer; transition: color .15s, border-color .15s;
   }
   .path button:hover { color: var(--fg); border-color: rgba(255,255,255,0.2); }
 
   .opts { display: flex; flex-direction: column; gap: 9px; margin-bottom: 18px; }
   .opt { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 12.5px; color: var(--dim); }
   .opt .box {
-    width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid var(--faint);
-    display: grid; place-items: center; transition: background .12s, border-color .12s;
+    width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--faint);
+    display: grid; place-items: center; transition: background .15s, border-color .15s;
   }
-  .opt.on .box { background: var(--blue); border-color: var(--blue); }
-  .opt.on .box::after { content: "✓"; font-size: 10px; color: #fff; }
+  .opt.on .box { background: rgba(79,128,245,0.2); border-color: var(--blue); }
+  .opt.on .box::after { content: "✓"; font-size: 10px; color: #cdd9ff; }
   .opt.on { color: var(--fg); }
 
   /* progress / terminal log */
   .stage { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .term {
-    flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 10px;
-    background: #08080a; padding: 12px 14px; overflow-y: auto;
+    flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); padding: 12px 14px; overflow-y: auto;
     font-family: var(--mono); font-size: 11px; line-height: 1.7; color: var(--dim);
     display: none;
   }
@@ -111,30 +134,49 @@
   .term .l .ok { color: var(--green); }
   .term .l .b { color: var(--blue); }
   .term .l .d { color: var(--faint); }
+  .term .l .warn { color: var(--amber); }
   .term::-webkit-scrollbar { width: 8px; }
   .term::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
 
-  .meter { height: 4px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; margin-top: 14px; display: none; }
+  .meter { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.06); overflow: hidden; margin-top: 14px; display: none; }
   .meter.show { display: block; }
-  .meter i { display: block; height: 100%; width: 0%; border-radius: 3px;
-    background: linear-gradient(90deg, var(--blue), #6f9bff); transition: width .3s ease; }
+  .meter i { display: block; height: 100%; width: 0%; border-radius: 2px;
+    background: var(--blue); transition: width .3s ease; }
 
-  /* footer / action */
+  /* footer / action — CTA matches the site's download pill */
   .foot { flex: none; display: flex; align-items: center; gap: 12px; margin-top: 18px; }
   .foot .status { flex: 1; font-family: var(--mono); font-size: 11px; color: var(--faint); }
   .btn {
-    -webkit-app-region: no-drag; border: 0; border-radius: 9px; cursor: pointer;
-    font-family: var(--sans); font-weight: 500; font-size: 13px; padding: 11px 24px;
-    background: linear-gradient(180deg, #5a8bff, #4472e6); color: #fff;
-    box-shadow: 0 8px 22px -8px rgba(79,128,245,0.7);
-    transition: transform .1s, box-shadow .2s, opacity .2s;
+    -webkit-app-region: no-drag; cursor: pointer;
+    display: flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 12px; padding: 8px 18px;
+    border: 1px solid rgba(79,128,245,0.55); border-radius: 6px;
+    background: rgba(79,128,245,0.14); color: #cdd9ff;
+    box-shadow: 0 0 0 0 rgba(79,128,245,0.4);
+    transition: background .15s, border-color .15s, color .15s, box-shadow .3s, opacity .2s;
   }
-  .btn:hover { box-shadow: 0 10px 28px -8px rgba(79,128,245,0.9); }
+  .btn:hover {
+    background: rgba(79,128,245,0.24); border-color: var(--blue); color: #fff;
+    box-shadow: 0 6px 22px -8px rgba(79,128,245,0.7);
+  }
   .btn:active { transform: translateY(1px); }
   .btn:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
-  .btn.ghost { background: none; border: 1px solid var(--line); color: var(--dim); box-shadow: none; }
+  .btn.ghost { background: none; border-color: var(--line); color: var(--dim); box-shadow: none; }
   .btn.ghost:hover { color: var(--fg); border-color: rgba(255,255,255,0.22); }
-  .btn.done { background: linear-gradient(180deg, #55c06f, #43a85b); box-shadow: 0 8px 22px -8px rgba(79,181,106,0.7); }
+  .btn.done {
+    border-color: rgba(79,181,106,0.55); background: rgba(79,181,106,0.14); color: #cdeeda;
+  }
+  .btn.done:hover {
+    background: rgba(79,181,106,0.24); border-color: var(--green); color: #fff;
+    box-shadow: 0 6px 22px -8px rgba(79,181,106,0.7);
+  }
+  .btn.danger {
+    border-color: rgba(216,160,74,0.55); background: rgba(216,160,74,0.12); color: #ecd7b3;
+  }
+  .btn.danger:hover {
+    background: rgba(216,160,74,0.22); border-color: var(--amber); color: #fff;
+    box-shadow: 0 6px 22px -8px rgba(216,160,74,0.6);
+  }
 
   .hide { display: none !important; }
 </style>
@@ -142,7 +184,7 @@
 <body>
 <div class="win">
   <div class="bar">
-    <div class="brand"><span class="dot"></span><b>zro</b> installer</div>
+    <div class="brand"><img src="logo.png" alt="" /><b>zro</b><span id="barMode">installer</span></div>
     <div class="sp"></div>
     <button id="min" title="Minimize">–</button>
     <button id="close" class="close" title="Close">✕</button>
@@ -150,26 +192,37 @@
 
   <div class="body">
     <div class="hero">
-      <div class="logo">z</div>
+      <div class="logo"><img src="logo.png" alt="zro" /></div>
       <div>
-        <h1 id="title">Install zro</h1>
-        <p id="subtitle">A fast, minimalist browser for Windows — 4.4 MB.</p>
+        <h1 id="title">install zro<span class="cur"></span></h1>
+        <p id="subtitle">a fast, minimalist browser for windows · 4.4 mb</p>
       </div>
     </div>
 
     <!-- setup view -->
     <div id="setup">
       <div class="field">
-        <label>Install location</label>
+        <label>install location</label>
         <div class="path">
           <input id="path" spellcheck="false" />
-          <button id="browse">Browse</button>
+          <button id="browse">browse</button>
         </div>
       </div>
       <div class="opts">
         <div class="opt on" data-opt="desktop"><span class="box"></span>Create desktop shortcut</div>
         <div class="opt on" data-opt="startmenu"><span class="box"></span>Add to Start menu</div>
         <div class="opt on" data-opt="launch"><span class="box"></span>Launch zro when done</div>
+      </div>
+    </div>
+
+    <!-- uninstall view -->
+    <div id="unsetup" class="hide">
+      <div class="field">
+        <label>installed at</label>
+        <div class="path"><input id="unpath" spellcheck="false" readonly /></div>
+      </div>
+      <div class="opts">
+        <div class="opt" data-opt="purge"><span class="box"></span>Also delete browsing data (profiles, history, settings)</div>
       </div>
     </div>
 
@@ -180,10 +233,11 @@
     </div>
 
     <div class="foot">
-      <div class="status" id="status">Ready to install.</div>
-      <button class="btn ghost hide" id="cancel">Cancel</button>
-      <button class="btn" id="install">Install</button>
-      <button class="btn done hide" id="finish">Launch zro</button>
+      <div class="status" id="status">ready to install</div>
+      <button class="btn ghost hide" id="cancel">cancel</button>
+      <button class="btn" id="install">install</button>
+      <button class="btn danger hide" id="uninstall">uninstall</button>
+      <button class="btn done hide" id="finish">launch zro</button>
     </div>
   </div>
 </div>

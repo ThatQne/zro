@@ -19,6 +19,8 @@ const PAYLOAD_URL: &str =
     "https://github.com/ThatQne/zro/releases/latest/download/zro-portable.zip";
 /// The executable name inside the zip / install dir.
 const EXE_NAME: &str = "zro.exe";
+/// This installer, copied into the install dir to serve as the uninstaller.
+const UNINSTALL_NAME: &str = "uninstall.exe";
 
 #[derive(Deserialize, Default)]
 struct Options {
@@ -89,9 +91,94 @@ async fn install(app: AppHandle, dir: String, options: Options) -> Result<(), St
         }
     }
 
-    // 4. uninstall entry
-    emit(&app, 94, "Registering uninstaller");
-    register_uninstall(&target, &exe);
+    // 4. uninstaller: this binary doubles as it — copy ourselves into the
+    // install dir; `uninstall.exe --uninstall` boots the themed uninstall UI.
+    emit(&app, 92, "Installing uninstaller");
+    let un_exe = target.join(UNINSTALL_NAME);
+    if let Ok(me) = std::env::current_exe() {
+        let _ = std::fs::copy(&me, &un_exe);
+    }
+
+    // 5. uninstall entry
+    emit(&app, 96, "Registering uninstaller");
+    register_uninstall(&target, &exe, &un_exe);
+
+    emit(&app, 100, "Done");
+    Ok(())
+}
+
+/// `zro Setup.exe --uninstall` (as `uninstall.exe` in the install dir) →
+/// the same window runs the uninstall flow instead.
+#[tauri::command]
+fn install_mode() -> String {
+    if std::env::args().any(|a| a == "--uninstall") {
+        "uninstall".into()
+    } else {
+        "install".into()
+    }
+}
+
+/// Where zro is installed — the uninstaller binary lives inside that dir.
+#[tauri::command]
+fn uninstall_info() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_string_lossy().to_string()))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn uninstall(app: AppHandle, purge: bool) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = me
+        .parent()
+        .ok_or("cannot resolve install directory")?
+        .to_path_buf();
+    if !dir.join(EXE_NAME).exists() {
+        return Err(format!("{EXE_NAME} not found next to the uninstaller — refusing to delete {}", dir.display()));
+    }
+
+    emit(&app, 10, "Removing shortcuts");
+    if let Some(desk) = dirs::desktop_dir() {
+        let _ = std::fs::remove_file(desk.join("zro.lnk"));
+    }
+    if let Some(start) = dirs::data_dir() {
+        let _ = std::fs::remove_file(start.join("Microsoft/Windows/Start Menu/Programs/zro.lnk"));
+    }
+
+    emit(&app, 30, "Removing registry entries");
+    unregister_uninstall();
+
+    if purge {
+        emit(&app, 45, "Deleting browsing data");
+        // Roaming (settings/session) + Local (WebView2 profile) for zro's id.
+        for base in [dirs::data_dir(), dirs::data_local_dir()] {
+            if let Some(d) = base.map(|p| p.join("com.zro.browser")) {
+                let _ = std::fs::remove_dir_all(&d);
+            }
+        }
+    }
+
+    emit(&app, 65, "Removing application files");
+    // Delete everything except the running uninstaller (Windows won't let a
+    // process delete its own exe); the leftover exe + dir go via a detached
+    // shell once we exit.
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p == me {
+                continue;
+            }
+            let _ = if p.is_dir() {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+        }
+    }
+
+    emit(&app, 90, "Scheduling final cleanup");
+    schedule_self_delete(&dir);
 
     emit(&app, 100, "Done");
     Ok(())
@@ -187,13 +274,14 @@ fn create_shortcut(_lnk: &Path, _target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+const UNINSTALL_KEY: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\zro";
+
 /// Add the Programs-and-Features / Settings uninstall entry (HKCU).
 #[cfg(windows)]
-fn register_uninstall(install_dir: &Path, exe: &Path) {
-    let key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\zro";
+fn register_uninstall(install_dir: &Path, exe: &Path, un_exe: &Path) {
     let add = |name: &str, val: &str| {
         hidden(std::process::Command::new("reg").args([
-            "add", key, "/v", name, "/d", val, "/f",
+            "add", UNINSTALL_KEY, "/v", name, "/d", val, "/f",
         ]))
         .status()
         .ok();
@@ -203,17 +291,39 @@ fn register_uninstall(install_dir: &Path, exe: &Path) {
     add("Publisher", "ThatQne");
     add("InstallLocation", &install_dir.to_string_lossy());
     add("DisplayIcon", &exe.to_string_lossy());
-    // TODO: point UninstallString at a real uninstaller (a `--uninstall` mode of
-    // this binary copied into the install dir would be the clean approach).
-    add("UninstallString", &format!("\"{}\" --uninstall", exe.display()));
+    add("UninstallString", &format!("\"{}\" --uninstall", un_exe.display()));
     hidden(std::process::Command::new("reg").args([
-        "add", key, "/v", "NoModify", "/t", "REG_DWORD", "/d", "1", "/f",
+        "add", UNINSTALL_KEY, "/v", "NoModify", "/t", "REG_DWORD", "/d", "1", "/f",
     ]))
     .status()
     .ok();
 }
 #[cfg(not(windows))]
-fn register_uninstall(_install_dir: &Path, _exe: &Path) {}
+fn register_uninstall(_install_dir: &Path, _exe: &Path, _un_exe: &Path) {}
+
+#[cfg(windows)]
+fn unregister_uninstall() {
+    hidden(std::process::Command::new("reg").args(["delete", UNINSTALL_KEY, "/f"]))
+        .status()
+        .ok();
+}
+#[cfg(not(windows))]
+fn unregister_uninstall() {}
+
+/// A running exe can't delete itself — hand the last rites to a detached
+/// `cmd` that waits for us to exit, then removes the install dir.
+#[cfg(windows)]
+fn schedule_self_delete(dir: &Path) {
+    let script = format!(
+        "ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"",
+        dir.display()
+    );
+    hidden(std::process::Command::new("cmd").args(["/c", &script]))
+        .spawn()
+        .ok();
+}
+#[cfg(not(windows))]
+fn schedule_self_delete(_dir: &Path) {}
 
 pub fn run() {
     tauri::Builder::default()
@@ -222,6 +332,9 @@ pub fn run() {
             pick_install_dir,
             install,
             launch_zro,
+            install_mode,
+            uninstall_info,
+            uninstall,
         ])
         .setup(|app| {
             // Center the compact installer window.

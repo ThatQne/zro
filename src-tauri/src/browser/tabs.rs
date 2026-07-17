@@ -97,6 +97,35 @@ pub(crate) fn suspend_webview_hiding(app: &AppHandle, label: &str, wv: &tauri::W
     suspend_webview_covering(app, label, wv, hide_first, false);
 }
 
+/// When each webview last had audio playing (label → instant). The freeze
+/// paths check IsDocumentPlayingAudio at the moment they run — but a playlist
+/// (YouTube Music) is briefly SILENT between tracks, and a sweep landing in
+/// that gap froze the tab mid-album. Any audio-state change stamps this map;
+/// a webview audible within the grace window is treated as still playing.
+#[cfg(windows)]
+static LAST_AUDIBLE: std::sync::LazyLock<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+#[cfg(windows)]
+const AUDIBLE_GRACE: std::time::Duration = std::time::Duration::from_secs(90);
+
+#[cfg(windows)]
+pub(crate) fn note_audio_activity(label: &str) {
+    LAST_AUDIBLE
+        .lock()
+        .unwrap()
+        .insert(label.to_string(), std::time::Instant::now());
+}
+
+#[cfg(windows)]
+pub(crate) fn recently_audible(label: &str) -> bool {
+    LAST_AUDIBLE
+        .lock()
+        .unwrap()
+        .get(label)
+        .map(|t| t.elapsed() < AUDIBLE_GRACE)
+        .unwrap_or(false)
+}
+
 /// `cover_hole` = this is the VISIBLE (active) webview being hidden while the
 /// window may still be on screen — mark `page_hidden` and re-solidify the UI
 /// region so the transparent window never shows the desktop through the hole.
@@ -115,6 +144,12 @@ pub(crate) fn suspend_webview_covering(
     };
     use webview2_com::TrySuspendCompletedHandler;
     use windows_core::Interface;
+
+    // Playlist between-tracks gap: audio is off RIGHT NOW but was playing
+    // seconds ago — freezing here kills the next track. Skip; retry later.
+    if recently_audible(label) {
+        return;
+    }
 
     let app = app.clone();
     let label = label.to_string();
@@ -560,6 +595,32 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
     let _ = wv.with_webview(move |pwv| unsafe {
         let controller = pwv.controller();
         if let Ok(core) = controller.CoreWebView2() {
+            // Present as plain Chrome. WebView2's default UA carries "Edg/…"
+            // and its client-hint brands say "Microsoft Edge WebView2" — sites
+            // with embedded-browser blocklists (Twitch's supported-browsers
+            // page, some Google sign-in flows) refuse on sight of it. Strip
+            // the Edg token from the UA string; keep everything else (real
+            // Chrome version) so nothing looks spoofed.
+            {
+                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
+                use windows_core::HSTRING;
+                if let Ok(settings) = core.Settings() {
+                    if let Ok(s2) = settings.cast::<ICoreWebView2Settings2>() {
+                        let mut p = PWSTR::null();
+                        if s2.UserAgent(&mut p).is_ok() {
+                            let ua = take_pwstr(p);
+                            let cleaned: String = ua
+                                .split_whitespace()
+                                .filter(|t| !t.starts_with("Edg/") && !t.contains("WebView2"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if !cleaned.is_empty() && cleaned != ua {
+                                let _ = s2.SetUserAgent(&HSTRING::from(cleaned.as_str()));
+                            }
+                        }
+                    }
+                }
+            }
             // Custom right-click menu: suppress WebView2's built-in context menu,
             // capture what was clicked (link / image / selection), and pop our
             // own native menu — the same OS-popup style as the sidebar menus.
@@ -953,6 +1014,10 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                 }
                             }
                         }
+                        // Any audio START/STOP means media was active this
+                        // instant — stamp the grace window so the freeze
+                        // sweeps don't kill a playlist in a between-track gap.
+                        note_audio_activity(&id_a);
                         emit_audio(&app_a, &id_a, &sender);
                         Ok(())
                     },

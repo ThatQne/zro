@@ -12,6 +12,13 @@ interface Props {
 
 const PAD_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "back"] as const;
 
+// StrictMode (dev only) mounts every component twice back-to-back — without
+// this, the effect below fired verify_identity twice, stacking two native
+// Hello prompts. A real reopen is always at least a user-interaction later,
+// so a short time guard tells the two apart without a ref (which wouldn't
+// survive the remount anyway).
+let lastHelloAttempt = 0;
+
 /** Full-screen gate shown EVERY time incognito is entered. Input is either
  *  the digit PIN (boxes + numpad, auto-submits when full) or Windows Hello. */
 export default function IncognitoLock({ onUnlock, onCancel }: Props) {
@@ -27,6 +34,17 @@ export default function IncognitoLock({ onUnlock, onCancel }: Props) {
 
   // Punch a hole so this renders over the page webview
   useEffect(() => trackOverlay("incognito-lock", ref.current, 0), []);
+
+  // Windows Hello is the primary input — prompt it immediately instead of
+  // making the user click the button. If Hello isn't set up the call errors
+  // fast and the passcode pad / button is right there.
+  useEffect(() => {
+    const now = Date.now();
+    if (now - lastHelloAttempt < 500) return;
+    lastHelloAttempt = now;
+    tryHello();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function pushDigit(d: string) {
     if (!hasPasscode || entry.length >= len) return;
@@ -182,13 +200,6 @@ export default function IncognitoLock({ onUnlock, onCancel }: Props) {
           <Fingerprint size={14} />
           {helloBusy ? "Waiting for Windows Hello…" : helloErr ? "Hello failed — try again" : "Use Windows Hello"}
         </motion.button>
-
-        <button
-          onClick={onCancel}
-          style={{ background: "none", border: "none", cursor: "pointer", color: "#443a50", fontSize: 10.5, padding: 2 }}
-        >
-          Cancel
-        </button>
       </motion.div>
     </div>
   );

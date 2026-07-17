@@ -47,16 +47,19 @@ an NSIS installer. Two things to wire up:
    `releases/latest/download/zro-portable.zip` (see `PAYLOAD_URL` in
    [lib.rs](src-tauri/src/lib.rs)).
 
-2. **Uninstaller.** `register_uninstall` currently points `UninstallString` at
-   `zro.exe --uninstall`. Either implement a `--uninstall` mode in zro (remove
-   the install dir + shortcuts + this registry key), or copy a tiny uninstaller
-   binary into the install dir and point at that.
+2. ~~**Uninstaller.**~~ Done — the installer copies itself into the install dir
+   as `uninstall.exe` and registers `uninstall.exe --uninstall`. That flag boots
+   the same themed window in uninstall mode: removes shortcuts, the registry
+   key, optionally all browsing data (`purge` checkbox), the app files, then
+   hands final cleanup (its own exe + dir) to a detached shell on exit.
+   Preview it in a browser with `index.html?uninstall`.
 
 ## Status
 
-Scaffold — **not yet built or runtime-tested.** The UI is complete; the Rust
-install flow is implemented but needs the payload zip (above) and a build+test
-pass on Windows. Icons are borrowed from the main app
+**Not yet built or runtime-tested.** UI is complete and themed to match the
+website (same palette, IBM Plex bundled in `ui/fonts/`, real logo); install and
+uninstall flows are implemented but need the payload zip (above) and a
+build+test pass on Windows. Icons are borrowed from the main app
 (`../src-tauri/icons`).
 
 ## Why this over NSIS
