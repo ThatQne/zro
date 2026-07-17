@@ -1,6 +1,6 @@
 [package]
 name = "zro"
-version = "0.1.0"
+version = "0.1.1"
 description = "zro browser"
 authors = ["ThatQne"]
 edition = "2021"
@@ -72,7 +72,7 @@ windows = { version = "0.61", features = [
 incremental = true
 
 # Dev builds run dependencies (adblock engine, regex, image decode, TLS) in
-# debug mode = 10-50x slower — the "everything is slow / fans blowing" tax of
+# debug mode = 10-50x slower â€” the "everything is slow / fans blowing" tax of
 # `tauri dev`. Optimize DEPS only: our own crate stays incremental + fast to
 # rebuild, while the hot native code runs at near-release speed.
 [profile.dev.package."*"]
