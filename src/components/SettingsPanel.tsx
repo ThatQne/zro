@@ -176,6 +176,10 @@ export default function SettingsPanel({ onClose }: Props) {
             <UpdatesSection />
           </Card>
 
+          <Card icon={<Copy size={12} />} title="Backup & Migrate" defaultOpen={false}>
+            <BackupSection />
+          </Card>
+
           <div style={{ fontSize: 9, color: "#2a2a2a", textAlign: "center", lineHeight: 1.6, marginTop: 4 }}>
             zro 0.1 · Chromium via WebView2<br />
             Ctrl+T new · Ctrl+W close · Ctrl+Shift+T reopen · Ctrl+H history · Ctrl+Tab cycle
@@ -346,6 +350,92 @@ function UpdatesSection() {
       <div style={{ fontSize: 9, color: "#3a3a3a", marginTop: 8, lineHeight: 1.5 }}>
         Updates are downloaded from GitHub Releases and verified with a signature before install.
       </div>
+    </div>
+  );
+}
+
+// ── Backup / migrate ─────────────────────────────────────────────────────────
+
+// zustand-persist keys — everything zro keeps in localStorage. `dev`
+// (localhost:1420) and the installed build (tauri://localhost) are different
+// origins, so this never carries over on its own even though both point at
+// the same physical WebView2 profile folder — export here, paste in the
+// other instance.
+const BACKUP_KEYS = ["zro-store", "zro-extensions", "zro-ai-chat"];
+
+function BackupSection() {
+  const [importText, setImportText] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+
+  function doExport() {
+    const dump: Record<string, string> = {};
+    for (const k of BACKUP_KEYS) {
+      const v = localStorage.getItem(k);
+      if (v != null) dump[k] = v;
+    }
+    const json = JSON.stringify(dump);
+    invoke("set_clipboard_text", { text: json })
+      .then(() => setStatus(`Copied (${(json.length / 1024).toFixed(0)} KB) — paste it in the other zro instance.`))
+      .catch(() => setStatus("Copy failed."));
+  }
+
+  function doImport() {
+    try {
+      const dump = JSON.parse(importText.trim());
+      let n = 0;
+      for (const k of BACKUP_KEYS) {
+        if (typeof dump[k] === "string") { localStorage.setItem(k, dump[k]); n++; }
+      }
+      if (n === 0) { setStatus("No recognizable zro data in that text."); return; }
+      setStatus(`Imported ${n} store(s) — reloading…`);
+      setTimeout(() => window.location.reload(), 500);
+    } catch {
+      setStatus("That doesn't look like valid backup JSON.");
+    }
+  }
+
+  return (
+    <div>
+      <Label>Export (tabs, folders, settings, pinned extensions, AI chats)</Label>
+      <button
+        onClick={doExport}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, width: "100%", justifyContent: "center",
+          padding: "7px 10px", borderRadius: 6, background: "#1c1c1c", color: "#e4e4e4",
+          border: "1px solid rgba(255,255,255,0.07)", cursor: "pointer", fontSize: 12,
+        }}
+      >
+        <Copy size={13} /> Copy backup to clipboard
+      </button>
+
+      <div style={{ height: 12 }} />
+      <Label>Import — paste a backup from the other instance</Label>
+      <textarea
+        value={importText}
+        onChange={(e) => setImportText(e.target.value)}
+        placeholder="Paste here…"
+        rows={2}
+        style={{
+          width: "100%", background: "#161616", border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 5, padding: "6px 8px", color: "#cfcfcf", fontSize: 11, outline: "none",
+          resize: "vertical", fontFamily: "monospace", lineHeight: 1.4,
+        }}
+      />
+      <button
+        onClick={doImport}
+        disabled={!importText.trim()}
+        style={{
+          marginTop: 6, display: "flex", alignItems: "center", gap: 6, width: "100%", justifyContent: "center",
+          padding: "7px 10px", borderRadius: 6, background: importText.trim() ? "#1c1c1c" : "#161616",
+          color: importText.trim() ? "#e4e4e4" : "#555",
+          border: "1px solid rgba(255,255,255,0.07)", cursor: importText.trim() ? "pointer" : "default", fontSize: 12,
+        }}
+      >
+        Apply & reload
+      </button>
+
+      {status && <div style={{ fontSize: 10, color: "#7a9cf5", marginTop: 8, lineHeight: 1.5 }}>{status}</div>}
+      <Hint>This replaces tabs/folders/settings/pinned extensions/AI chats in THIS instance with the imported ones. Passwords and cookies aren't included — those already live in the shared Windows-encrypted store.</Hint>
     </div>
   );
 }
