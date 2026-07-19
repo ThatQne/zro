@@ -61,7 +61,7 @@
       "endpoints": [
         "https://github.com/ThatQne/zro/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3NzMyQUUwRDIzMDNERDgKUldUWVBURFM0Q3B6Snh2bVlJMTgwNjBRbDNvZjJLc3hubDMzZE9NOGJWK0h2Mk5UQTREMVNnUm0K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5RDBFMjI5QjI4QkFCNUIKUldSYnE0dXlLZUxRNlF6Ym0yeTlwU3RseFM3UXJZcmZKa0FQeXhsY2U3SnpyejhnMmlZaGJpUmYK",
       "windows": {
         "installMode": "passive"
       }

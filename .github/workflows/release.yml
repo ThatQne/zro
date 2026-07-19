@@ -1,12 +1,14 @@
 name: release
 
-# Push a version tag (e.g. `git tag v0.1.1 && git push --tags`) to build a
-# signed Windows installer, publish a GitHub Release, and generate the
-# `latest.json` the in-app auto-updater reads.
+# Manual fallback only — the primary release path is now tools/publish.ps1,
+# which builds + signs + publishes locally (faster, and lets you smoke-test
+# the installer before it goes public). Run this by hand from the Actions
+# tab if you ever need a clean-room build. NOTE: TAURI_SIGNING_PRIVATE_KEY
+# (repo secret) must match the pubkey currently in src-tauri/tauri.conf.json
+# — they were regenerated locally on 2026-07-19 and the secret was NOT
+# updated to match, so this workflow will currently produce a mismatched
+# signature. Update the secret before relying on this again.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -52,31 +54,17 @@ jobs:
           prerelease: false
 
       # tauri-action above publishes the stock NSIS installer (needed as-is —
-      # the updater's latest.json/signature point at it). This app's real
-      # first-run download is zro-installer (see zro-installer/README.md):
-      # a themed Tauri app that downloads+extracts a portable zip. Neither
-      # existed as release assets until now — build and attach both.
+      # the updater's latest.json/signature point at it). The themed installer
+      # (zro-Setup.exe) and its zro-portable.zip payload are built LOCALLY by
+      # tools/publish.ps1 — that source lives off-repo now, so this fallback
+      # can only attach the portable zip.
       - name: Package portable zip
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path stage/icons | Out-Null
           Copy-Item src-tauri/target/release/zro.exe stage/
           Copy-Item src-tauri/icons/icon.png stage/icons/
           Compress-Archive -Path stage/* -DestinationPath zro-portable.zip -Force
-
-      - name: Install zro-installer deps
-        working-directory: zro-installer
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build themed installer
-        working-directory: zro-installer
-        run: pnpm tauri build
-
-      - name: Upload installer assets
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $nsis = Get-ChildItem -Path "zro-installer/src-tauri/target/release/bundle/nsis" -Filter *-setup.exe | Select-Object -First 1
-          Copy-Item $nsis.FullName "zro-Setup.exe"
-          gh release upload ${{ github.ref_name }} zro-portable.zip zro-Setup.exe --clobber
+          gh release upload ${{ github.ref_name }} zro-portable.zip --clobber

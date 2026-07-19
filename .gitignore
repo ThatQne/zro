@@ -14,6 +14,11 @@ zro.key
 *.pem
 signing-key*
 
+# local-only: release tooling (publish GUI + secrets + staged artifacts) and
+# the themed installer source stay off the public repo
+tools/
+zro-installer/
+
 # env / secrets
 .env
 .env.*
