@@ -50,3 +50,33 @@ jobs:
           releaseBody: "Download the `.exe` installer below. Existing installs update automatically."
           releaseDraft: false
           prerelease: false
+
+      # tauri-action above publishes the stock NSIS installer (needed as-is —
+      # the updater's latest.json/signature point at it). This app's real
+      # first-run download is zro-installer (see zro-installer/README.md):
+      # a themed Tauri app that downloads+extracts a portable zip. Neither
+      # existed as release assets until now — build and attach both.
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path stage/icons | Out-Null
+          Copy-Item src-tauri/target/release/zro.exe stage/
+          Copy-Item src-tauri/icons/icon.png stage/icons/
+          Compress-Archive -Path stage/* -DestinationPath zro-portable.zip -Force
+
+      - name: Install zro-installer deps
+        working-directory: zro-installer
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build themed installer
+        working-directory: zro-installer
+        run: pnpm tauri build
+
+      - name: Upload installer assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $nsis = Get-ChildItem -Path "zro-installer/src-tauri/target/release/bundle/nsis" -Filter *-setup.exe | Select-Object -First 1
+          Copy-Item $nsis.FullName "zro-Setup.exe"
+          gh release upload ${{ github.ref_name }} zro-portable.zip zro-Setup.exe --clobber
