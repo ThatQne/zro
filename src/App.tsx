@@ -302,20 +302,33 @@ export default function App() {
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Boot: restore last session (lazy). Fresh install → Google.
+  // Boot: restore last session (lazy). Fresh install → Google. The store now
+  // hydrates from a file asynchronously (durable, survives a localStorage
+  // wipe), so wait for hydration before deciding restore-vs-fresh — reading
+  // tabs too early would always look empty and clobber the session with a lone
+  // Google tab.
   useEffect(() => {
     if (bootDone) return;
-    bootDone = true;
-    requestAnimationFrame(() => {
-      pushBounds();
-      const s = useBrowserStore.getState();
-      if (s.tabs.length > 0) {
-        const target = s.tabs.find((t) => t.id === s.activeTabId) ?? s.tabs[0];
-        s.switchTab(target.id).catch(console.error);
-      } else {
-        createTab("https://www.google.com").catch(console.error);
-      }
-    });
+    const doBoot = () => {
+      if (bootDone) return;
+      bootDone = true;
+      requestAnimationFrame(() => {
+        pushBounds();
+        const s = useBrowserStore.getState();
+        if (s.tabs.length > 0) {
+          const target = s.tabs.find((t) => t.id === s.activeTabId) ?? s.tabs[0];
+          s.switchTab(target.id).catch(console.error);
+        } else {
+          createTab("https://www.google.com").catch(console.error);
+        }
+      });
+    };
+    if (useBrowserStore.persist.hasHydrated()) {
+      doBoot();
+      return;
+    }
+    const unsub = useBrowserStore.persist.onFinishHydration(() => doBoot());
+    return () => { unsub?.(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

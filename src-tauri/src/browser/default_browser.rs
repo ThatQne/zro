@@ -50,19 +50,42 @@ pub fn open_url(app: &AppHandle, url: &str) {
     let _ = app.emit("open-url", serde_json::json!({ "url": url }));
 }
 
+// Registration writes native Win32 registry calls, not `reg.exe`. A burst of
+// a dozen reg.exe spawns from an unsigned exe is a persistence pattern that
+// trips Defender's ML — the in-process API leaves nothing to match on.
 #[cfg(windows)]
-fn reg_add(key: &str, name: Option<&str>, value: &str) -> bool {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = std::process::Command::new("reg");
-    cmd.arg("add").arg(key);
-    match name {
-        Some(n) => { cmd.arg("/v").arg(n); }
-        None => { cmd.arg("/ve"); }
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Create `HKCU\<subkey>` and set one value (name=None → the key's default
+/// value). All string data is REG_SZ. Returns false on any failure.
+#[cfg(windows)]
+fn reg_set(subkey: &str, name: Option<&str>, value: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE,
+        REG_OPTION_NON_VOLATILE, REG_SZ,
+    };
+    unsafe {
+        let sub = wide(subkey);
+        let mut hkey = HKEY::default();
+        let rc = RegCreateKeyExW(
+            HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), None, PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut hkey, None,
+        );
+        if rc != ERROR_SUCCESS {
+            return false;
+        }
+        let v = wide(value);
+        let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2);
+        let n = name.map(wide);
+        let name_ptr = n.as_ref().map(|w| PCWSTR(w.as_ptr())).unwrap_or(PCWSTR::null());
+        let rc = RegSetValueExW(hkey, name_ptr, Some(0), REG_SZ, Some(bytes));
+        let _ = RegCloseKey(hkey);
+        rc == ERROR_SUCCESS
     }
-    cmd.arg("/d").arg(value).arg("/f");
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Write the HKCU registration that makes zro appear as a default-browser
@@ -75,30 +98,30 @@ pub fn register() -> Result<(), String> {
         .to_string();
 
     // ProgId: how Windows opens an http(s) document with zro.
-    let classes = format!("HKCU\\Software\\Classes\\{PROGID}");
-    reg_add(&classes, None, "zro HTML Document");
-    reg_add(&format!("{classes}\\DefaultIcon"), None, &format!("{exe},0"));
-    reg_add(
+    let classes = format!("Software\\Classes\\{PROGID}");
+    reg_set(&classes, None, "zro HTML Document");
+    reg_set(&format!("{classes}\\DefaultIcon"), None, &format!("{exe},0"));
+    reg_set(
         &format!("{classes}\\shell\\open\\command"),
         None,
         &format!("\"{exe}\" \"%1\""),
     );
 
     // Capabilities: name + which URL schemes zro claims.
-    let caps = "HKCU\\Software\\zro\\Capabilities";
-    reg_add(caps, Some("ApplicationName"), "zro");
-    reg_add(caps, Some("ApplicationDescription"), "A fast, minimalist browser.");
+    let caps = "Software\\zro\\Capabilities";
+    reg_set(caps, Some("ApplicationName"), "zro");
+    reg_set(caps, Some("ApplicationDescription"), "A fast, minimalist browser.");
     let assoc = format!("{caps}\\URLAssociations");
-    reg_add(&assoc, Some("http"), PROGID);
-    reg_add(&assoc, Some("https"), PROGID);
+    reg_set(&assoc, Some("http"), PROGID);
+    reg_set(&assoc, Some("https"), PROGID);
     // StartMenuInternet-style shortcut associations too (Set Default Programs).
     let file_assoc = format!("{caps}\\FileAssociations");
-    reg_add(&file_assoc, Some(".htm"), PROGID);
-    reg_add(&file_assoc, Some(".html"), PROGID);
+    reg_set(&file_assoc, Some(".htm"), PROGID);
+    reg_set(&file_assoc, Some(".html"), PROGID);
 
     // Advertise the capabilities set to Windows.
-    reg_add(
-        "HKCU\\Software\\RegisteredApplications",
+    reg_set(
+        "Software\\RegisteredApplications",
         Some("zro"),
         "Software\\zro\\Capabilities",
     );
@@ -108,15 +131,22 @@ pub fn register() -> Result<(), String> {
 /// Whether zro's default-browser registration is present.
 #[cfg(windows)]
 pub fn is_registered() -> bool {
-    use std::os::windows::process::CommandExt;
-    std::process::Command::new("reg")
-        .args(["query", "HKCU\\Software\\RegisteredApplications", "/v", "zro"])
-        .creation_flags(0x0800_0000)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    use windows::core::w;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    unsafe {
+        let mut cb: u32 = 0;
+        let rc = RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\RegisteredApplications"),
+            w!("zro"),
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut cb),
+        );
+        rc == ERROR_SUCCESS
+    }
 }
 
 /// Register (if needed) and open Windows' Default-apps page so the user can
@@ -125,13 +155,22 @@ pub fn is_registered() -> bool {
 #[tauri::command]
 pub async fn set_default_browser(_app: AppHandle) -> Result<(), String> {
     register()?;
-    use std::os::windows::process::CommandExt;
-    // Deep-link straight to zro's default-apps entry when possible; Windows
-    // falls back to the general page if the app id isn't matched yet.
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", "ms-settings:defaultapps?registeredAppUser=zro"])
-        .creation_flags(0x0800_0000)
-        .spawn();
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // Deep-link straight to zro's default-apps entry via ShellExecute (no cmd
+    // /C start shell). Windows falls back to the general page if the app id
+    // isn't matched yet.
+    unsafe {
+        let _ = ShellExecuteW(
+            None,
+            w!("open"),
+            w!("ms-settings:defaultapps?registeredAppUser=zro"),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
     Ok(())
 }
 

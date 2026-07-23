@@ -1,9 +1,10 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
 import { useBrowserStore } from "./tabs";
+import { tauriStorage } from "./tauriStorage";
 
 export interface AiMsg {
   role: "user" | "ai" | "tool";
@@ -194,6 +195,7 @@ export const useAiStore = create<AiStore>()(
     }),
     {
       name: "zro-ai-chat",
+      storage: createJSONStorage(() => tauriStorage("zro-ai-chat")),
       partialize: (s) => ({
         threads: s.threads
           .map((t) => ({

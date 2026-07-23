@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { tauriStorage } from "./tauriStorage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
@@ -821,6 +822,10 @@ export const useBrowserStore = create<BrowserStore>()(
     }),
     {
       name: "zro-store",
+      // Durable file-backed storage (not raw localStorage): a WebView2 leveldb
+      // rebuild used to wipe every tab + all history with no restore. See
+      // tauriStorage. Async — App boot waits for onFinishHydration.
+      storage: createJSONStorage(() => tauriStorage("zro-store")),
       partialize: (s) => ({
         // Tabs persist across restarts; webviews are recreated lazily on
         // first activation. Incognito tabs die with the session.

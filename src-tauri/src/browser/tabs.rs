@@ -1505,6 +1505,7 @@ pub async fn create_browser_tab(
             if let Some(wv) = app.get_webview(&label) {
                 // The idle spare is kept frozen — thaw before it goes live
                 resume_webview(&app, &label, &wv);
+                let label_for_retry = label.clone();
                 {
                     let mut s = state.lock().unwrap();
                     s.labels.insert(id.clone(), label.clone());
@@ -1519,7 +1520,37 @@ pub async fn create_browser_tab(
                         "document.documentElement.innerHTML='';\
                          document.documentElement.style.background='#0c0c0c';",
                     );
-                    let _ = wv.navigate(parsed.clone());
+                    if let Err(e) = wv.navigate(parsed.clone()) {
+                        eprintln!("[spare-adopt] navigate failed for {id}: {e}");
+                    }
+                    // This is the ONLY caller that resumes a just-suspended
+                    // spare and navigates it to a DIFFERENT url in the same
+                    // tick — Ctrl+T always adopts onto the spare's own warm
+                    // url (already_there=true, skips this branch entirely),
+                    // so a resume/navigate race here was never exercised by
+                    // normal use, only by middle-click / "open in new tab"
+                    // (reported: tab opens, page never loads). Self-heal: if
+                    // no page-load ever started, the navigate() was dropped —
+                    // fire it again once the renderer's had time to wake up.
+                    let app2 = app.clone();
+                    let label2 = label_for_retry.clone();
+                    let id2 = id.clone();
+                    let target = parsed.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                        let started = {
+                            let state = app2.state::<Mutex<BrowserState>>();
+                            let s = state.lock().unwrap();
+                            s.nav_started.contains_key(&id2)
+                        };
+                        if started {
+                            return;
+                        }
+                        if let Some(wv) = app2.get_webview(&label2) {
+                            eprintln!("[spare-adopt] navigate looked dropped for {id2} - retrying");
+                            let _ = wv.navigate(target);
+                        }
+                    });
                 }
                 finish_foreground(&app, &state, &id, &url, &wv, prev_active, layout, &main);
                 if already_there {

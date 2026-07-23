@@ -100,6 +100,8 @@ pub fn run() {
             browser::log_js,
             browser::clear_browsing_data,
             browser::clear_site_data,
+            browser::save_session,
+            browser::load_session,
             browser::set_password_autosave,
             browser::list_passwords,
             browser::reveal_password,

@@ -1,7 +1,8 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { tauriStorage } from "./tauriStorage";
 
 export interface Extension {
   id: string;
@@ -158,6 +159,7 @@ export const useExtStore = create<ExtStore>()(
     }),
     {
       name: "zro-extensions",
+      storage: createJSONStorage(() => tauriStorage("zro-extensions")),
       // Only pins persist; items/icons are refetched from WebView2 each launch
       partialize: (s) => ({ pinned: s.pinned }),
     }

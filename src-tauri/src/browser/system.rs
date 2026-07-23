@@ -364,6 +364,51 @@ pub fn auto_trim_cache(app: &AppHandle) {
     });
 }
 
+// ── Durable app-state snapshot ────────────────────────────────────────────────
+// The React stores (tabs, history, folders, settings, extensions, AI chat) used
+// to live ONLY in WebView2 localStorage. That leveldb gets discarded WHOLE when
+// it corrupts — an unclean shutdown, or two processes touching the default
+// profile during a default-browser "open localhost" launch — taking every tab
+// and all history with it, with no backup and no restore. Mirror each store to
+// a plain JSON file in the app data dir: a localStorage rebuild can never lose
+// the session again, and the file is the source of truth on load.
+
+fn session_path(app: &AppHandle, name: &str) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    // The name comes from our own stores, but slug it anyway so it can never
+    // escape the data dir (path traversal via a crafted key).
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("store-{slug}.json")))
+}
+
+/// Persist one store's serialized state. Atomic replace (temp + rename) so a
+/// crash mid-write can never leave a truncated, unparseable snapshot behind.
+#[tauri::command]
+pub async fn save_session(app: AppHandle, name: String, data: String) -> Result<(), String> {
+    let path = session_path(&app, &name)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, data.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read one store's snapshot back. `None` when it was never written (fresh
+/// install) — the frontend then falls back to any legacy localStorage copy.
+#[tauri::command]
+pub async fn load_session(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    let path = session_path(&app, &name)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Toggle WebView2 password autosave + autofill on every open tab.
 /// Credentials live in the WebView2 user-data folder, encrypted at rest via
 /// Windows DPAPI (same storage Edge uses).
