@@ -1,6 +1,6 @@
 [package]
 name = "zro"
-version = "0.1.7"
+version = "0.1.8"
 description = "zro browser"
 authors = ["ThatQne"]
 edition = "2021"
@@ -83,8 +83,14 @@ opt-level = 2
 # and size, but release links in a fraction of the time (fat LTO re-optimized
 # the whole dep tree on ONE thread every build - the ~8min "nothing changed"
 # rebuild tax).
+# panic = "unwind" (Rust default, NOT abort): with abort, a single stray
+# .unwrap() on ANY thread fastfails the whole process (0xc0000409) — one bad
+# page event or command took the entire browser + the user's session down. With
+# unwind, a panic in a command handler surfaces as a JS error and a panic on a
+# worker thread kills only that thread; the window stays up. The panic hook
+# (see lib.rs) logs the origin either way.
 [profile.release]
-panic = "abort"
+panic = "unwind"
 lto = "thin"
 opt-level = "s"
 strip = true

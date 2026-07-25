@@ -323,27 +323,63 @@ pub async fn delete_download(dls: tauri::State<'_, Downloads>, id: u64) -> Resul
     }
 }
 
+// Open / reveal go through ShellExecuteW, not `cmd /C start` + a spawned
+// explorer. A `cmd.exe` child from an unsigned binary is precisely the pattern
+// Defender's ML tags on the freshly-downloaded file ("DefenseEvasion") — the
+// in-process shell call leaves no child cmd to match on.
 #[cfg(windows)]
-fn spawn_hidden(exe: &str, args: &[&str]) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    std::process::Command::new(exe)
-        .args(args)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 #[cfg(windows)]
 #[tauri::command]
 pub async fn open_download(path: String) -> Result<(), String> {
-    spawn_hidden("cmd", &["/C", "start", "", &path])
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // "open" the file with its default handler — same effect as `start <path>`.
+    let wpath = wide(&path);
+    unsafe {
+        let h = ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wpath.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        // ShellExecute returns <=32 on failure.
+        if h.0 as usize <= 32 {
+            return Err(format!("could not open {path}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
 #[tauri::command]
 pub async fn reveal_download(path: String) -> Result<(), String> {
-    spawn_hidden("explorer", &[&format!("/select,{path}")])
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // explorer /select,<path> highlights the file in its folder. Launched via
+    // ShellExecuteW ("open" verb on explorer.exe), not a raw process spawn.
+    let params = wide(&format!("/select,\"{path}\""));
+    unsafe {
+        let h = ShellExecuteW(
+            None,
+            w!("open"),
+            w!("explorer.exe"),
+            PCWSTR(params.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        if h.0 as usize <= 32 {
+            return Err(format!("could not reveal {path}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]

@@ -30,7 +30,52 @@ fn start_drag(window: tauri::Window) {
     window.start_dragging().unwrap();
 }
 
+/// Write every panic (message + exact file:line + thread + backtrace) to
+/// `%LOCALAPPDATA%\com.zro.browser\crash.log`. A release build is a GUI-subsystem
+/// process with no console, so `eprintln!` vanishes and an abort left nothing to
+/// go on — the only signal was Event Viewer's opaque 0xc0000409. This makes the
+/// originating unwrap self-report. Installed before anything else so it covers
+/// startup panics too; the hook runs even when panic=unwind unwinds the thread.
+fn install_panic_logger() {
+    std::panic::set_hook(Box::new(|info| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".into());
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".into());
+        let thread = std::thread::current();
+        let tname = thread.name().unwrap_or("<unnamed>").to_string();
+        let bt = std::backtrace::Backtrace::force_capture();
+        let entry = format!(
+            "\n[{ts}] PANIC on thread '{tname}' at {loc}\n  message: {msg}\n  backtrace:\n{bt}\n"
+        );
+        eprintln!("{entry}");
+        if let Ok(base) = std::env::var("LOCALAPPDATA") {
+            let dir = std::path::Path::new(&base).join("com.zro.browser");
+            let _ = std::fs::create_dir_all(&dir);
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("crash.log"))
+            {
+                let _ = f.write_all(entry.as_bytes());
+            }
+        }
+    }));
+}
+
 pub fn run() {
+    install_panic_logger();
     tauri::Builder::default()
         // Single instance MUST be the first plugin. When zro is the default
         // browser and already running, Windows starts a second `zro.exe "<url>"`;
