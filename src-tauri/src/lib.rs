@@ -208,6 +208,10 @@ pub fn run() {
             #[cfg(windows)]
             browser::default_browser::heal_registration();
 
+            // Must run before the first tab webview is built — it decides the
+            // client-hint brands injected into every page.
+            browser::shields::seed_chrome_version();
+
             // Native resize handler — repositions the single browser webview
             // immediately on every OS resize event, no JS bridge latency
             let app_handle = app.handle().clone();

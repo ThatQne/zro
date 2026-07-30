@@ -35,6 +35,102 @@ static HTTPS_UP: AtomicBool = AtomicBool::new(true);
 /// Pillar 4 — strip tracking params (utm_*, fbclid, gclid…) off URLs.
 static STRIP_PARAMS: AtomicBool = AtomicBool::new(true);
 
+// ── Client-hint / User-Agent consistency ─────────────────────────────────────
+// We strip "Edg/…" and "WebView2" from the UA string so embedded-browser
+// blocklists don't refuse us (see configure_webview). But WebView2 keeps
+// advertising itself in the CLIENT HINTS — `Sec-CH-UA` and
+// `navigator.userAgentData.brands` still say "Microsoft Edge WebView2". A UA
+// claiming plain Chrome next to hints naming an embedded runtime is a textbook
+// spoof signature, and bot-detection stacks score exactly that disagreement.
+// Keep the two stories identical instead: derive the hints from the same
+// Chrome version the cleaned UA reports.
+
+/// Chrome major version parsed out of the runtime UA (0 = not known yet).
+static CHROME_MAJOR: AtomicU64 = AtomicU64::new(0);
+
+/// Seed the version from the installed WebView2 runtime ("126.0.2592.68"),
+/// before any webview exists. Without this the FIRST tab would be built with
+/// no hint script — its builder runs before that webview reports a UA — and
+/// exactly one tab per launch would carry the mismatch we're fixing.
+#[cfg(windows)]
+pub(crate) fn seed_chrome_version() {
+    use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
+    use windows_core::{PCWSTR, PWSTR};
+    unsafe {
+        let mut v = PWSTR::null();
+        if GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut v).is_ok() {
+            let s = webview2_com::take_pwstr(v);
+            // "126.0.2592.68 dev" → 126
+            if let Some(major) = s.split('.').next().and_then(|m| m.trim().parse::<u64>().ok()) {
+                if major > 0 {
+                    CHROME_MAJOR.store(major, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn seed_chrome_version() {}
+
+/// Record the Chrome major version from a real WebView2 user-agent string.
+pub(crate) fn note_chrome_version(ua: &str) {
+    let major = ua
+        .split("Chrome/")
+        .nth(1)
+        .and_then(|r| r.split('.').next())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    if major > 0 {
+        CHROME_MAJOR.store(major, Ordering::Relaxed);
+    }
+}
+
+/// `Sec-CH-UA` value matching our spoofed UA, or None before the version is
+/// known. GREASE brand included — a list without one is itself anomalous.
+pub(crate) fn sec_ch_ua() -> Option<String> {
+    let v = CHROME_MAJOR.load(Ordering::Relaxed);
+    if v == 0 {
+        return None;
+    }
+    Some(format!(
+        r#""Chromium";v="{v}", "Google Chrome";v="{v}", "Not/A)Brand";v="8""#
+    ))
+}
+
+/// JS-side half of the same fix: `navigator.userAgentData` is read directly by
+/// detection scripts, so the header rewrite alone would still disagree with
+/// what the page can see. Injected on every page, independent of Shields —
+/// this is UA consistency, not a privacy pillar.
+pub(crate) fn ua_data_script() -> Option<String> {
+    let v = CHROME_MAJOR.load(Ordering::Relaxed);
+    if v == 0 {
+        return None;
+    }
+    Some(format!(
+        r#"(function(){{try{{
+  var brands=[{{brand:"Chromium",version:"{v}"}},{{brand:"Google Chrome",version:"{v}"}},{{brand:"Not/A)Brand",version:"8"}}];
+  var uad=navigator.userAgentData;
+  if(!uad)return;
+  var hi=uad.getHighEntropyValues?uad.getHighEntropyValues.bind(uad):null;
+  Object.defineProperty(navigator,'userAgentData',{{configurable:true,get:function(){{
+    return {{
+      brands:brands, mobile:false, platform:"Windows",
+      toJSON:function(){{return {{brands:brands,mobile:false,platform:"Windows"}};}},
+      getHighEntropyValues:function(keys){{
+        return (hi?hi(keys):Promise.resolve({{}})).then(function(r){{
+          r=r||{{}}; r.brands=brands; r.mobile=false; r.platform="Windows";
+          if(r.fullVersionList)r.fullVersionList=brands.map(function(b){{return {{brand:b.brand,version:b.version+".0.0.0"}};}});
+          if(r.uaFullVersion)r.uaFullVersion="{v}.0.0.0";
+          return r;
+        }});
+      }}
+    }};
+  }}}});
+}}catch(e){{}}}})();"#
+    ))
+}
+
 /// Lifetime count of blocked requests, surfaced in the UI.
 static BLOCKED_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Lifetime count of tracking params + http upgrades scrubbed off navigations.

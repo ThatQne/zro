@@ -614,6 +614,11 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                 .filter(|t| !t.starts_with("Edg/") && !t.contains("WebView2"))
                                 .collect::<Vec<_>>()
                                 .join(" ");
+                            // Feed the real Chrome version to the client-hint
+                            // fixup — the hints must tell the SAME story as
+                            // this string or the disagreement itself becomes
+                            // the tell. See shields::note_chrome_version.
+                            crate::browser::shields::note_chrome_version(&ua);
                             if !cleaned.is_empty() && cleaned != ua {
                                 let _ = s2.SetUserAgent(&HSTRING::from(cleaned.as_str()));
                             }
@@ -815,7 +820,21 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             return Ok(());
                         }
 
-                        // (2) Shields — nothing to do when blocking is off/loading
+                        // (2) Client-hint consistency. Deliberately BEFORE the
+                        // Shields gate: the UA is rewritten unconditionally, so
+                        // the hints have to be corrected unconditionally too —
+                        // otherwise turning Shields off leaves a page reading
+                        // "Chrome" in the UA and "Microsoft Edge WebView2" in
+                        // Sec-CH-UA, which is what trips bot detection.
+                        if let Some(brands) = crate::browser::shields::sec_ch_ua() {
+                            if let Ok(headers) = req.Headers() {
+                                let _ = headers.SetHeader(&HSTRING::from("sec-ch-ua"), &HSTRING::from(brands.as_str()));
+                                let _ = headers.SetHeader(&HSTRING::from("sec-ch-ua-mobile"), &HSTRING::from("?0"));
+                                let _ = headers.SetHeader(&HSTRING::from("sec-ch-ua-platform"), &HSTRING::from("\"Windows\""));
+                            }
+                        }
+
+                        // (3) Shields — nothing to do when blocking is off/loading
                         if !crate::browser::shields::ads_active() {
                             return Ok(());
                         }
@@ -1302,6 +1321,15 @@ fn spawn_webview(
 
     if let Some(dir) = data_dir {
         builder = builder.data_directory(dir);
+    }
+
+    // navigator.userAgentData must agree with the rewritten UA string. NOT
+    // gated on Shields — this is the JS-visible half of the same consistency
+    // fix the request headers get (see shields::ua_data_script). Empty until
+    // the first webview has reported a real UA, which is fine: that happens
+    // during the very first tab's setup.
+    if let Some(js) = crate::browser::shields::ua_data_script() {
+        builder = builder.initialization_script(&js);
     }
 
     // Anti-fingerprinting: inject the farble script at document-create (before
