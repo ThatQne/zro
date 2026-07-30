@@ -19,6 +19,7 @@ import HistoryPanel from "./components/HistoryPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import ShieldPanel from "./components/ShieldPanel";
 import DownloadsPanel from "./components/DownloadsPanel";
+import DownloadToast from "./components/DownloadToast";
 import IncognitoLock from "./components/IncognitoLock";
 import UpdateBanner from "./components/UpdateBanner";
 import MemoryPanel from "./components/MemoryPanel";
@@ -106,7 +107,9 @@ export default function App() {
   function handleCombo(combo: string) {
     const s = useBrowserStore.getState();
     switch (combo) {
-      case "new-tab": s.createTab(undefined, activeFolderId(s.tabs, s.activeTabId)); break;
+      // Root level, matching the sidebar's New Tab button (same tooltip, same
+      // action) — a folder's own + is what puts a tab inside a folder.
+      case "new-tab": s.createTab(undefined); break;
       case "close-tab": if (s.activeTabId) s.closeTab(s.activeTabId); break;
       case "reopen-tab": s.reopenClosedTab(); break;
       case "reload":
@@ -173,11 +176,16 @@ export default function App() {
 
   // Popups (window.open / target=_blank) → new tabs
   useEffect(() => {
-    const unsub = listen<{ url: string }>("open-url", (e) => {
+    const unsub = listen<{ url: string; external?: boolean }>("open-url", (e) => {
       if (e.payload.url && e.payload.url !== "about:blank") {
-        // Link/popup opened from a tab inside a folder lands in that folder
+        // Link/popup opened from a tab inside a folder lands in that folder.
+        // A URL handed to us by ANOTHER app has no source tab, so whatever
+        // folder happened to be active is meaningless — those go to root.
         const s = useBrowserStore.getState();
-        s.createTab(e.payload.url, activeFolderId(s.tabs, s.activeTabId));
+        const folder = e.payload.external
+          ? undefined
+          : activeFolderId(s.tabs, s.activeTabId);
+        s.createTab(e.payload.url, folder);
       }
     });
     return () => { unsub.then((u) => u()); };
@@ -352,7 +360,8 @@ export default function App() {
         position: "relative",
       }}
     >
-      <style>{`@keyframes zro-dl-pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }`}</style>
+      <style>{`@keyframes zro-dl-pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+        @keyframes zro-dl-sweep { 0%{transform:translateX(-100%)} 100%{transform:translateX(340%)} }`}</style>
 
       {/* Single top row: logo · window drag · nav · URL · actions · window btns */}
       <div
@@ -489,6 +498,12 @@ export default function App() {
             </PanelOverlay>
           )}
         </AnimatePresence>
+
+        {/* Recent-download card, anchored under the downloads button. Skipped
+            while the full panel is open — it would just say the same thing. */}
+        {panel !== "downloads" && (
+          <DownloadToast onOpenPanel={() => setPanel("downloads")} />
+        )}
 
         {/* Incognito unlock gate (Windows Hello / passcode) */}
         <AnimatePresence>

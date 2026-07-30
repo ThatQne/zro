@@ -204,6 +204,16 @@ pub(crate) fn set_fullscreen(app: &AppHandle, fullscreen: bool) {
         s.fullscreen = fullscreen;
         s.layout.fullscreen = fullscreen;
     }
+    // Tell the OS, not just ourselves. Expanding the webview inside a still-
+    // *maximized* window only LOOKS fullscreen: the shell never enters its
+    // fullscreen-app state, so the taskbar keeps its slot in the layout while
+    // our window covers that strip — it stays visible but every click on it
+    // lands on us instead. A real fullscreen window makes the shell yield the
+    // strip on the way in and take it back (working) on the way out; tao also
+    // restores the previous maximized/normal geometry for us.
+    if let Some(w) = app.get_window("main") {
+        let _ = w.set_fullscreen(fullscreen);
+    }
     sync_bounds(app);
     update_ui_region(app);
 }

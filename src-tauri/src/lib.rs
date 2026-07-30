@@ -203,6 +203,11 @@ pub fn run() {
             // boost_process_priority docs (runs on the main/UI thread).
             browser::boost_process_priority();
 
+            // If the default-browser association points at some other zro exe
+            // (a stale build-tree path), repoint it at this installed one.
+            #[cfg(windows)]
+            browser::default_browser::heal_registration();
+
             // Native resize handler — repositions the single browser webview
             // immediately on every OS resize event, no JS bridge latency
             let app_handle = app.handle().clone();

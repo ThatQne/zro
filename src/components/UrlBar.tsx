@@ -42,6 +42,11 @@ export default function UrlBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  // Did the user actually aim at the URL bar? Set by a mousedown on the input
+  // itself and by the Ctrl+L path. See handleFocus.
+  const intentRef = useRef(false);
+  // True for one tick after the UI webview regains OS focus.
+  const restoringRef = useRef(false);
 
   useEffect(() => {
     if (!editing) setValue(activeTab?.url ?? "");
@@ -50,11 +55,30 @@ export default function UrlBar() {
   // Ctrl+L / Ctrl+E / new tab — focus and select the URL bar
   useEffect(() => {
     function onFocusReq() {
+      intentRef.current = true;
       inputRef.current?.focus();
       setTimeout(() => inputRef.current?.select(), 0);
     }
     window.addEventListener("zro-focus-url", onFocusReq);
     return () => window.removeEventListener("zro-focus-url", onFocusReq);
+  }, []);
+
+  // Clicking the sidebar / window edge / anywhere in the chrome used to light
+  // up the URL bar with its text selected. Nothing focused it: the page webview
+  // held OS focus, so the UI webview was deactivated — and deactivating a
+  // webview BLURS its active element, then activating it FOCUSES that element
+  // again. The URL input is what new-tab left focused, so every click that
+  // merely re-activated the chrome replayed focus + select-all on it.
+  //
+  // So: remember when a focus event is just that replay, and hand focus back.
+  useEffect(() => {
+    function onWinFocus() {
+      restoringRef.current = true;
+      // The element's focus event arrives right after this one.
+      setTimeout(() => { restoringRef.current = false; }, 0);
+    }
+    window.addEventListener("focus", onWinFocus);
+    return () => window.removeEventListener("focus", onWinFocus);
   }, []);
 
   // Google suggestions — debounced, Rust-side fetch (CORS-free)
@@ -244,6 +268,14 @@ export default function UrlBar() {
   }
 
   function handleFocus() {
+    // Focus we didn't ask for — the webview just got re-activated and Chromium
+    // restored focus to whatever held it last (see the window-focus effect).
+    // Give it up rather than opening the dropdown and selecting the URL.
+    if (restoringRef.current && !intentRef.current) {
+      inputRef.current?.blur();
+      return;
+    }
+    intentRef.current = false;
     setEditing(true);
     setDirty(false);
     setValue(activeTab?.url ?? "");
@@ -336,6 +368,9 @@ export default function UrlBar() {
             setCompletion(c);
             shownRef.current = c ?? v;
           }}
+          // Aiming at the bar IS intent — mousedown lands before focus, so this
+          // survives the case where the same click also re-activates the chrome.
+          onMouseDown={() => { intentRef.current = true; }}
           onFocus={handleFocus}
           onBlur={close}
           onKeyDown={handleKeyDown}

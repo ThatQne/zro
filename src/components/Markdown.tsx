@@ -83,7 +83,9 @@ function splitBlocks(text: string): Block[] {
 }
 
 export default function Markdown({ text }: { text: string }) {
-  const { createTab } = useBrowserStore();
+  // Selector, not the bare hook — one Markdown block per chat message, each
+  // otherwise re-rendering (and re-parsing) on unrelated store churn.
+  const createTab = useBrowserStore((s) => s.createTab);
   const openLink = (url: string) => { createTab(url); };
 
   const rendered = useMemo(() => {

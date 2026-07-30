@@ -46,8 +46,12 @@ pub fn url_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> 
 /// tab. Best-effort — dropped if the frontend isn't listening yet.
 pub fn open_url(app: &AppHandle, url: &str) {
     // Same shape the popup/new-window path uses so the one frontend listener
-    // handles both.
-    let _ = app.emit("open-url", serde_json::json!({ "url": url }));
+    // handles both — `external` is what tells them apart: there is no source
+    // tab here, so the new tab must not inherit the active tab's folder.
+    let _ = app.emit(
+        "open-url",
+        serde_json::json!({ "url": url, "external": true }),
+    );
 }
 
 // Registration writes native Win32 registry calls, not `reg.exe`. A burst of
@@ -88,14 +92,64 @@ fn reg_set(subkey: &str, name: Option<&str>, value: &str) -> bool {
     }
 }
 
+/// Read `HKCU\<subkey>`'s default (unnamed) REG_SZ value.
+#[cfg(windows)]
+fn reg_get(subkey: &str) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    unsafe {
+        let sub = wide(subkey);
+        let mut cb: u32 = 0;
+        let rc = RegGetValueW(
+            HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR::null(),
+            RRF_RT_REG_SZ, None, None, Some(&mut cb),
+        );
+        if rc != ERROR_SUCCESS || cb == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; (cb as usize / 2) + 1];
+        let rc = RegGetValueW(
+            HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR::null(),
+            RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut cb),
+        );
+        if rc != ERROR_SUCCESS {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]))
+    }
+}
+
+/// Is this exe running out of a cargo build tree (i.e. `tauri dev` / a local
+/// `cargo build`), rather than an installed copy?
+#[cfg(windows)]
+fn is_dev_exe(exe: &str) -> bool {
+    let l = exe.to_ascii_lowercase();
+    l.contains("\\target\\debug\\") || l.contains("\\target\\release\\")
+}
+
 /// Write the HKCU registration that makes zro appear as a default-browser
 /// candidate. Idempotent — safe to call every launch.
+///
+/// Refuses to point Windows at a build-tree exe. A dev exe registered here is
+/// doubly bad: the debug binary is a CONSOLE-subsystem build (a black console
+/// flashes on every launch — `windows_subsystem = "windows"` is release-only),
+/// and every externally-opened link then starts a *second* zro binary against
+/// the one `com.zro.browser` WebView2 profile, whose Local Storage leveldb only
+/// tolerates a single owner. That collision is what wiped a whole session once.
 #[cfg(windows)]
 pub fn register() -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .to_string_lossy()
         .to_string();
+    if is_dev_exe(&exe) {
+        return Err(
+            "this is a development build — install zro and set the default from the installed copy"
+                .into(),
+        );
+    }
 
     // ProgId: how Windows opens an http(s) document with zro.
     let classes = format!("Software\\Classes\\{PROGID}");
@@ -147,6 +201,31 @@ pub fn is_registered() -> bool {
         );
         rc == ERROR_SUCCESS
     }
+}
+
+/// Repair a registration that points at a different zro than this one.
+///
+/// The open command is a plain string in HKCU, so it keeps pointing at whatever
+/// exe registered last — including a build-tree binary that has since been
+/// deleted or, worse, one that still runs and fights the installed copy for the
+/// WebView2 profile. Only an installed build heals it: a dev run must never
+/// hijack the association.
+#[cfg(windows)]
+pub(crate) fn heal_registration() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = exe.to_string_lossy().to_string();
+    if is_dev_exe(&exe) {
+        return;
+    }
+    // Nothing registered at all → leave it alone; registering is the user's
+    // explicit choice via Settings, not something a launch does behind them.
+    let key = format!("Software\\Classes\\{PROGID}\\shell\\open\\command");
+    let Some(cur) = reg_get(&key) else { return };
+    let want = format!("\"{exe}\" \"%1\"");
+    if cur == want {
+        return;
+    }
+    let _ = register();
 }
 
 /// Register (if needed) and open Windows' Default-apps page so the user can

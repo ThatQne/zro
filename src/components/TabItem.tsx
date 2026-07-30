@@ -60,7 +60,15 @@ function SortableTabItem(props: Props) {
 }
 
 function TabItemView({ tab, isActive, isSelected, onContextMenu, collapsed, folderColor, dnd }: Props & { dnd: DndBits }) {
-  const { switchTab, closeTab, toggleSelectTab, toggleMute } = useBrowserStore();
+  // One selector per action, NOT `useBrowserStore()`. The bare hook subscribes
+  // to the whole store, so every title change, load flag, audio toggle and
+  // history push re-rendered every row in the list — N re-renders (with their
+  // framer-motion and dnd-kit work) for a change touching at most one tab.
+  // Action identities are stable, so these selectors never fire a re-render.
+  const switchTab = useBrowserStore((s) => s.switchTab);
+  const closeTab = useBrowserStore((s) => s.closeTab);
+  const toggleSelectTab = useBrowserStore((s) => s.toggleSelectTab);
+  const toggleMute = useBrowserStore((s) => s.toggleMute);
   const [hovered, setHovered] = useState(false);
   const showAudio = !!tab.audible || !!tab.muted;
   // Sleeping tabs only wake on click — pre-warming on hover meant a mouse

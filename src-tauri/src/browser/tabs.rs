@@ -1202,6 +1202,15 @@ fn spawn_webview(
         // bar (its blur closes the smartbar). Foreground activations call
         // set_focus explicitly.
         .focused(false)
+        // HTML5 drag and drop. wry's file-drop handler registers its OWN
+        // IDropTarget on the webview HWND and turns AllowExternalDrop off;
+        // Chromium runs page drags through the OS drag loop, so every
+        // dragstart got routed to a target that only understands CF_HDROP and
+        // refused the drop. Result: Trello cards, kanban boards and any other
+        // native-DnD UI would pick up but never move, and drag-to-upload zones
+        // never fired. We don't consume Tauri's drag-drop events anywhere, so
+        // handing drag back to WebView2 costs nothing and fixes both.
+        .disable_drag_drop_handler()
         // Ctrl+scroll / Ctrl+± / Ctrl+0 page zoom (wry disables it by default)
         .zoom_hotkeys_enabled(true)
         // Chrome-extension support (ICoreWebView2Profile7). MUST match the

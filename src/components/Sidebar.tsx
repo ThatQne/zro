@@ -9,7 +9,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { AnimatePresence, motion } from "framer-motion";
 import { Plus, FolderPlus } from "lucide-react";
-import { Tab, inProfile, activeFolderId, useBrowserStore } from "../store/tabs";
+import { Tab, inProfile, useBrowserStore } from "../store/tabs";
 import { trackOverlay } from "../store/overlays";
 import TabItem, { TabItemGhost } from "./TabItem";
 import FolderItem from "./FolderItem";
@@ -355,7 +355,9 @@ export default function Sidebar() {
           ))}
         </div>
         <div style={{ padding: "6px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, borderTop: "1px solid rgba(255,255,255,0.04)" }}>
-          <SidebarBtn onClick={() => createTab(undefined, activeFolderId(tabs, activeTabId))} title="New Tab (Ctrl+T)" icon={<Plus size={14} />} />
+          {/* Root level, NOT the active tab's folder — a folder has its own +
+              for that. See the expanded button below. */}
+          <SidebarBtn onClick={() => createTab(undefined)} title="New Tab (Ctrl+T)" icon={<Plus size={14} />} />
         </div>
       </div>
 
@@ -483,7 +485,11 @@ export default function Sidebar() {
                 }}
               >
                 <motion.button
-                  onClick={() => createTab(undefined, activeFolderId(tabs, activeTabId))}
+                  // Root level. Inheriting the active tab's folder here made
+                  // the generic "New Tab" button un-usable for starting
+                  // something OUTSIDE the folder you happened to be in, with
+                  // no way to opt out; FolderItem's own + is the in-folder one.
+                  onClick={() => createTab(undefined)}
                   title="New Tab (Ctrl+T)"
                   whileHover={{ backgroundColor: "rgba(79,128,245,0.16)", color: "#9ab4f5" }}
                   whileTap={{ scale: 0.98 }}

@@ -254,7 +254,7 @@ export default function FolderItem({ folder, expanded = true, onContextMenu, onF
 }
 
 function FolderStyleEditor({ folder, onClose }: { folder: FolderType; onClose: () => void }) {
-  const { setFolderStyle } = useBrowserStore();
+  const setFolderStyle = useBrowserStore((s) => s.setFolderStyle);
 
   return (
     <div

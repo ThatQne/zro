@@ -7178,7 +7178,7 @@ dependencies = [
 
 [[package]]
 name = "zro"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adblock",
  "aes-gcm",
