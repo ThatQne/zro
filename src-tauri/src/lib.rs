@@ -98,6 +98,7 @@ pub fn run() {
         .manage(Mutex::new(SemanticMemory::default()))
         .manage(Mutex::new(browser::memory::MemGraph::default()))
         .manage(AiCancel::default())
+        .manage(Mutex::new(agent::SearchConfig::default()))
         .manage(browser::Downloads::default())
         .invoke_handler(tauri::generate_handler![
             minimize_window,
@@ -129,6 +130,8 @@ pub fn run() {
             browser::list_downloads,
             browser::clear_downloads,
             browser::delete_download,
+            browser::control_download,
+            browser::remove_download,
             browser::trim_cache,
             browser::download_crx,
             browser::open_download,
@@ -177,6 +180,7 @@ pub fn run() {
             agent::list_openai_models,
             agent::ask_ai,
             agent::cancel_ai,
+            agent::set_search_config,
             agent::index_page,
             agent::get_page_meta,
         ])

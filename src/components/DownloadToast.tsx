@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
-import { Check, Download, FolderOpen, X, AlertCircle } from "lucide-react";
+import { Check, Download, FolderOpen, X, AlertCircle, Pause, Play } from "lucide-react";
 import { useDownloadsStore, type DownloadItem } from "../store/downloads";
-import { trackOverlay } from "../store/overlays";
+import { reportOverlay, trackOverlay } from "../store/overlays";
 
 /**
  * Transient "your download started / finished" card anchored under the
@@ -32,6 +32,7 @@ function fmtBytes(n: number): string {
 
 export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void }) {
   const items = useDownloadsStore((s) => s.items);
+  const control = useDownloadsStore((s) => s.control);
   // Newest row, whatever its state — that's the one the user just acted on.
   const latest: DownloadItem | undefined = items[0];
 
@@ -59,9 +60,34 @@ export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void
 
   // Chrome renders ABOVE the page webview only where a region hole is punched
   // (see store/overlays) — without this the card is invisible over any page.
+  //
+  // The rect has to be re-measured for a few frames after it appears.
+  // trackOverlay measures once and then relies on ResizeObserver, but this card
+  // animates in with a transform (scale + translate) and transforms don't fire
+  // ResizeObserver — so the hole got punched at the card's *mid-animation*
+  // size and position, and the settled card overhung it on the bottom and
+  // right. That overhang is the page webview showing through: the card looked
+  // clipped by an invisible container.
   useEffect(() => {
     if (!visible) return;
-    return trackOverlay("download-toast", ref.current, 10);
+    const stop = trackOverlay("download-toast", ref.current, 10);
+    let raf = 0;
+    const started = performance.now();
+    const settle = () => {
+      const el = ref.current;
+      if (el) {
+        const b = el.getBoundingClientRect();
+        reportOverlay("download-toast", {
+          x: b.left, y: b.top, w: b.width, h: b.height, r: 10,
+        });
+      }
+      if (performance.now() - started < 400) raf = requestAnimationFrame(settle);
+    };
+    raf = requestAnimationFrame(settle);
+    return () => {
+      cancelAnimationFrame(raf);
+      stop();
+    };
   }, [visible]);
 
   if (!latest) return null;
@@ -127,6 +153,8 @@ export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void
                   ? latest.reason || "failed"
                   : done
                   ? `Downloaded${latest.total ? ` · ${fmtBytes(latest.total)}` : ""}`
+                  : latest.paused
+                  ? `Paused · ${fmtBytes(latest.received ?? 0)}${latest.total ? " of " + fmtBytes(latest.total) : ""}`
                   : pct != null
                   ? `${pct}% · ${fmtBytes(latest.received ?? 0)} of ${fmtBytes(latest.total ?? 0)}`
                   : `${fmtBytes(latest.received ?? 0)} downloaded`}
@@ -183,12 +211,24 @@ export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void
             </div>
           )}
 
+          {latest.state === "active" && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <ToastBtn
+                icon={latest.paused ? <Play size={11} /> : <Pause size={11} />}
+                label={latest.paused ? "Resume" : "Pause"}
+                onClick={() => control(latest.id, latest.paused ? "resume" : "pause")}
+              />
+              <ToastBtn label="Cancel" onClick={() => control(latest.id, "cancel")} />
+            </div>
+          )}
+
           {done && (
             <div style={{ display: "flex", gap: 6 }}>
               <ToastBtn
                 label="Open"
+                // path, not id — that's the command's argument (see downloads.rs)
                 onClick={() => {
-                  invoke("open_download", { id: latest.id }).catch(() => {});
+                  invoke("open_download", { path: latest.path }).catch(() => {});
                   setDismissedId(latest.id);
                 }}
               />
@@ -196,7 +236,7 @@ export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void
                 icon={<FolderOpen size={11} />}
                 label="Show"
                 onClick={() => {
-                  invoke("reveal_download", { id: latest.id }).catch(() => {});
+                  invoke("reveal_download", { path: latest.path }).catch(() => {});
                   setDismissedId(latest.id);
                 }}
               />

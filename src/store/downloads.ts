@@ -13,6 +13,7 @@ export interface DownloadItem {
   // live progress (active only) — fed by "progress" events from WebView2
   received?: number;      // bytes so far
   total?: number;         // total bytes (0/undefined = unknown length)
+  paused?: boolean;       // user paused it (still "active")
   speed?: number;         // bytes/sec, smoothed
   _lastTs?: number;       // internal: last speed-sample time (perf.now ms)
   _lastBytes?: number;    // internal: bytes at last speed sample
@@ -24,8 +25,14 @@ interface DownloadsStore {
   unseen: number;
   markSeen: () => void;
   clearFinished: () => Promise<void>;
+  /** Cancel everything in flight and empty the list */
+  clearAll: () => Promise<void>;
   /** Delete the downloaded FILE from disk and drop the row */
   deleteFile: (id: number) => Promise<void>;
+  /** Drop a row (cancelling it first if still running); file stays on disk */
+  remove: (id: number) => Promise<void>;
+  /** Cancel / pause / resume an in-flight download */
+  control: (id: number, action: "cancel" | "pause" | "resume") => Promise<void>;
 }
 
 export const useDownloadsStore = create<DownloadsStore>()((set) => ({
@@ -33,12 +40,28 @@ export const useDownloadsStore = create<DownloadsStore>()((set) => ({
   unseen: 0,
   markSeen: () => set({ unseen: 0 }),
   clearFinished: async () => {
-    await invoke("clear_downloads").catch(() => {});
+    await invoke("clear_downloads", { all: false }).catch(() => {});
     set((s) => ({ items: s.items.filter((i) => i.state === "active") }));
+  },
+  clearAll: async () => {
+    await invoke("clear_downloads", { all: true }).catch(() => {});
+    set({ items: [] });
   },
   deleteFile: async (id) => {
     await invoke("delete_download", { id });
     set((s) => ({ items: s.items.filter((i) => i.id !== id) }));
+  },
+  remove: async (id) => {
+    await invoke("remove_download", { id }).catch(() => {});
+    set((s) => ({ items: s.items.filter((i) => i.id !== id) }));
+  },
+  control: async (id, action) => {
+    await invoke("control_download", { id, action }).catch(() => {});
+    if (action !== "cancel") {
+      set((s) => ({
+        items: s.items.map((i) => (i.id === id ? { ...i, paused: action === "pause" } : i)),
+      }));
+    }
   },
 }));
 
@@ -49,7 +72,7 @@ async function wireDownloads() {
     .then((items) => useDownloadsStore.setState({ items }))
     .catch(() => {});
 
-  await listen<{ kind: string; item?: DownloadItem; uri?: string; received?: number; total?: number }>(
+  await listen<{ kind: string; item?: DownloadItem; uri?: string; path?: string; received?: number; total?: number }>(
     "download-event",
     (e) => {
       const p = e.payload;
@@ -58,10 +81,12 @@ async function wireDownloads() {
       if (p.kind === "progress") {
         useDownloadsStore.setState((s) => {
           const uri = p.uri || "";
-          // match by url; redirected downloads change url, so fall back to the
-          // newest still-active row (mirrors the backend's Finished matching).
-          let idx = s.items.findIndex((i) => i.state === "active" && i.url === uri);
-          if (idx < 0) idx = s.items.findIndex((i) => i.state === "active");
+          const path = p.path || "";
+          // Destination path is unique per download, so it identifies the row
+          // exactly. Falling back to "any active row" (the old behaviour) meant
+          // two concurrent downloads fed each other's progress bars.
+          let idx = path ? s.items.findIndex((i) => i.path === path) : -1;
+          if (idx < 0 && uri) idx = s.items.findIndex((i) => i.state === "active" && i.url === uri);
           if (idx < 0) return s;
           const now = performance.now();
           const items = s.items.slice();

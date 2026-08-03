@@ -24,6 +24,39 @@ pub struct Downloads {
     pub counter: std::sync::atomic::AtomicU64,
 }
 
+/// Settle a download by its destination PATH.
+///
+/// The old completion path matched on URL and, failing that, fell back to
+/// "whatever active row started most recently" — so with two downloads in
+/// flight the finish of one marked the OTHER done and left the first stuck on
+/// "downloading" forever, un-clearable. The destination path is unique per
+/// download (see unique_download_path), so it identifies the row exactly.
+pub(crate) fn finish_by_path(app: &AppHandle, path: &str, success: bool, reason: Option<String>) {
+    let dls = app.state::<Downloads>();
+    let info = {
+        let mut items = dls.items.lock().unwrap();
+        items
+            .iter_mut()
+            .find(|i| i.path == path && i.state == "active")
+            .map(|item| {
+                item.state = if success { "done" } else { "failed" }.into();
+                item.reason = reason;
+                item.clone()
+            })
+    };
+    if let Some(info) = info {
+        let _ = app.emit("download-event", serde_json::json!({ "kind": "finished", "item": info }));
+    }
+}
+
+/// Look up the row id owning a destination path (WebView2 gives us the final
+/// path on the operation, which is how a native callback finds its row).
+pub(crate) fn id_for_path(app: &AppHandle, path: &str) -> Option<u64> {
+    let dls = app.state::<Downloads>();
+    let items = dls.items.lock().unwrap();
+    items.iter().find(|i| i.path == path).map(|i| i.id)
+}
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -169,6 +202,26 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "download".to_string())
             };
+            // Same URL, already running, started a moment ago = WebView2 raising
+            // Requested twice for one download (it does this on some redirect
+            // chains), not the user asking twice. Without this guard the second
+            // firing takes its own "name (2).ext" path and shows up as a
+            // duplicate row that never completes, because only one of the two
+            // has a real operation behind it. A deliberate re-download is
+            // seconds apart at minimum, so it still gets through.
+            {
+                let dls = app.state::<Downloads>();
+                let items = dls.items.lock().unwrap();
+                let now = epoch_ms();
+                if items
+                    .iter()
+                    .any(|i| i.state == "active" && i.url == url_s && now.saturating_sub(i.started_at) < 1500)
+                {
+                    eprintln!("[dl] duplicate Requested within 1.5s, ignoring: {url_s}");
+                    return false;
+                }
+            }
+
             if let Ok(dir) = app.path().download_dir() {
                 *destination = unique_download_path(&dir, &filename);
             }
@@ -299,9 +352,137 @@ pub async fn list_downloads(dls: tauri::State<'_, Downloads>) -> Result<Vec<Down
     Ok(dls.items.lock().unwrap().clone())
 }
 
+// ── Live download control (cancel / pause / resume) ──────────────────────────
+//
+// WebView2 hands us an ICoreWebView2DownloadOperation, which owns Cancel/Pause/
+// Resume — but it's an apartment-threaded COM object that is only ever valid on
+// the UI thread that created it. So it lives in a thread-local map there, and
+// commands (which run off-thread) hop over with run_on_main_thread. Without
+// this there was no way to stop a download at all: the panel could only delete
+// FINISHED rows, so anything stuck mid-flight was permanent.
+#[cfg(windows)]
+thread_local! {
+    pub(crate) static DL_OPS: std::cell::RefCell<
+        std::collections::HashMap<u64, webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation>
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Remember the live operation for a row so it can be controlled later.
+#[cfg(windows)]
+pub(crate) fn remember_op(
+    id: u64,
+    op: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+) {
+    DL_OPS.with(|m| m.borrow_mut().insert(id, op));
+}
+
+/// Drop a finished operation — nothing to control once it has settled.
+#[cfg(windows)]
+pub(crate) fn forget_op(id: u64) {
+    DL_OPS.with(|m| m.borrow_mut().remove(&id));
+}
+
+#[cfg(windows)]
+fn with_op<F: FnOnce(&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation)>(
+    id: u64,
+    f: F,
+) -> bool {
+    DL_OPS.with(|m| match m.borrow().get(&id) {
+        Some(op) => {
+            f(op);
+            true
+        }
+        None => false,
+    })
+}
+
+/// Cancel / pause / resume an in-flight download. `action` is one of
+/// "cancel" | "pause" | "resume".
 #[tauri::command]
-pub async fn clear_downloads(dls: tauri::State<'_, Downloads>) -> Result<(), String> {
-    dls.items.lock().unwrap().retain(|i| i.state == "active");
+pub async fn control_download(app: AppHandle, id: u64, action: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let app2 = app.clone();
+        let act = action.clone();
+        app.run_on_main_thread(move || {
+            let found = with_op(id, |op| unsafe {
+                match act.as_str() {
+                    "pause" => {
+                        let _ = op.Pause();
+                    }
+                    "resume" => {
+                        let _ = op.Resume();
+                    }
+                    _ => {
+                        let _ = op.Cancel();
+                    }
+                }
+            });
+            // Cancel gets no StateChanged in some interrupt paths, so settle the
+            // row here too — a cancelled download must never stay "downloading".
+            if act == "cancel" {
+                let path = {
+                    let dls = app2.state::<Downloads>();
+                    let items = dls.items.lock().unwrap();
+                    items.iter().find(|i| i.id == id).map(|i| i.path.clone())
+                };
+                if let Some(p) = path {
+                    finish_by_path(&app2, &p, false, Some("cancelled".into()));
+                }
+                forget_op(id);
+            }
+            if !found {
+                eprintln!("[dl] no live operation for {id} ({act})");
+            }
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, id, action);
+        Err("only supported on Windows".into())
+    }
+}
+
+/// Drop a row from the list whatever its state, cancelling it first if it is
+/// still running. The file on disk is left alone — that's delete_download.
+#[tauri::command]
+pub async fn remove_download(app: AppHandle, id: u64) -> Result<(), String> {
+    let was_active = {
+        let dls = app.state::<Downloads>();
+        let items = dls.items.lock().unwrap();
+        items.iter().any(|i| i.id == id && i.state == "active")
+    };
+    if was_active {
+        control_download(app.clone(), id, "cancel".into()).await?;
+    }
+    let dls = app.state::<Downloads>();
+    dls.items.lock().unwrap().retain(|i| i.id != id);
+    Ok(())
+}
+
+/// Clear the finished rows. `all` also cancels and clears anything still
+/// running — the escape hatch for a list that has got itself into a state.
+#[tauri::command]
+pub async fn clear_downloads(app: AppHandle, all: Option<bool>) -> Result<(), String> {
+    if all.unwrap_or(false) {
+        let active: Vec<u64> = {
+            let dls = app.state::<Downloads>();
+            let items = dls.items.lock().unwrap();
+            items.iter().filter(|i| i.state == "active").map(|i| i.id).collect()
+        };
+        for id in active {
+            let _ = control_download(app.clone(), id, "cancel".into()).await;
+        }
+        app.state::<Downloads>().items.lock().unwrap().clear();
+        return Ok(());
+    }
+    app.state::<Downloads>()
+        .items
+        .lock()
+        .unwrap()
+        .retain(|i| i.state == "active");
     Ok(())
 }
 

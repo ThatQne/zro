@@ -1,6 +1,6 @@
 {
   "productName": "zro",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "identifier": "com.zro.browser",
   "build": {
     "frontendDist": "../dist",

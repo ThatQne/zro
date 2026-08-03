@@ -12,6 +12,7 @@ use super::eval::{
     run_js_js, scroll_js, select_option_js, GET_LINKS_JS,
 };
 use super::facts::{recall_facts, remember_fact};
+use super::search::{read_urls, web_search};
 use super::semantic::search_memory;
 
 /// Every page tool accepts this — omit it for the active tab.
@@ -21,15 +22,17 @@ pub(crate) fn tool_defs() -> serde_json::Value {
     serde_json::json!([
         { "type": "function", "function": {
             "name": "web_search",
-            "description": "Search the web instantly WITHOUT opening any tab. Returns titles, urls and snippets in one step. ALWAYS use this first for factual or current-info questions — never navigate the visible tab to a search engine and click through results. Often the snippets alone answer the question; otherwise pass the best urls to read_url.",
+            "description": "Search the web instantly WITHOUT opening any tab. Returns titles, urls, snippets and publish dates in one step. ALWAYS use this first for factual or current-info questions — never navigate the visible tab to a search engine and click through results. Pass 2-4 DIFFERENTLY WORDED sub-queries covering the parts of the question (they run in parallel, one round trip); results appearing for several sub-queries are ranked highest. One query only when the question is genuinely single-fact. Often the snippets answer outright; otherwise pass the best urls to read_url.",
             "parameters": { "type": "object", "properties": {
-                "query": { "type": "string", "description": "Search query" }
-            }, "required": ["query"] } } },
+                "queries": { "type": "array", "items": { "type": "string" }, "description": "1-4 search queries, e.g. ['tesla q3 2026 delivery numbers', 'tesla q3 earnings analyst reaction']" },
+                "query": { "type": "string", "description": "Single query — only when one phrasing genuinely covers the question" }
+            } } } },
         { "type": "function", "function": {
             "name": "read_url",
-            "description": "Fetch up to 5 URLs IN PARALLEL and return the readable text of each — no tabs opened, no page rendering, ~1s total. Pass all urls you want to read in ONE call (e.g. the top 3 web_search hits), not one call per url. Use navigate only when the task needs to interact with the page or the user wants it open.",
+            "description": "Fetch up to 5 URLs IN PARALLEL and return each page's article text with its publish date — no tabs opened, no page rendering, ~1s total. Nav/ads/footers are stripped. ALWAYS pass `query`: long pages are cut to the passages that answer it ([…] marks skipped text), so without it you get the top of the page instead of the answer. Pass all urls in ONE call (e.g. the top 3 web_search hits), not one call per url. Use navigate only when the task needs to interact with the page or the user wants it open.",
             "parameters": { "type": "object", "properties": {
-                "urls": { "type": "array", "items": { "type": "string" }, "description": "1-5 full URLs including https://" }
+                "urls": { "type": "array", "items": { "type": "string" }, "description": "1-5 full URLs including https://" },
+                "query": { "type": "string", "description": "What you are looking for on these pages — the question, or the key phrase" }
             }, "required": ["urls"] } } },
         { "type": "function", "function": {
             "name": "list_tabs",
@@ -161,174 +164,6 @@ fn list_tabs_json(app: &AppHandle) -> String {
     serde_json::Value::Array(tabs).to_string()
 }
 
-// ── Direct HTTP search + fetch (no webview, no LLM round per page) ───────────
-
-const HTTP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-
-fn http_client(secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(secs))
-        .user_agent(HTTP_UA)
-        .build()
-        .map_err(|e| e.to_string())
-}
-
-fn decode_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-}
-
-/// Script/style blocks out, tags out, entities decoded, whitespace collapsed.
-fn strip_tags(html: &str) -> String {
-    use std::sync::OnceLock;
-    static BLOCKS: OnceLock<regex::Regex> = OnceLock::new();
-    static TAGS: OnceLock<regex::Regex> = OnceLock::new();
-    static WS: OnceLock<regex::Regex> = OnceLock::new();
-    let blocks = BLOCKS.get_or_init(|| {
-        regex::Regex::new(r"(?is)<(script|style|noscript|svg|head)\b.*?</\1>").unwrap()
-    });
-    let tags = TAGS.get_or_init(|| regex::Regex::new(r"(?s)<[^>]*>").unwrap());
-    let ws = WS.get_or_init(|| regex::Regex::new(r"[ \t\r\f]*\n[ \t\r\f\n]*").unwrap());
-    let no_blocks = blocks.replace_all(html, "\n");
-    let no_tags = tags.replace_all(&no_blocks, " ");
-    let decoded = decode_entities(&no_tags);
-    ws.replace_all(&decoded, "\n")
-        .lines()
-        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn clip_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() } else { s.chars().take(max).collect::<String>() + "…" }
-}
-
-/// DDG wraps result hrefs as //duckduckgo.com/l/?uddg=<real-url> — unwrap them.
-fn unwrap_ddg_href(href: &str) -> Option<String> {
-    let abs = if href.starts_with("//") { format!("https:{href}") } else { href.to_string() };
-    let u = url::Url::parse(&abs).ok()?;
-    if u.host_str().map_or(false, |h| h.ends_with("duckduckgo.com")) {
-        if u.path().contains("y.js") { return None; } // ad redirect
-        u.query_pairs().find(|(k, _)| k == "uddg").map(|(_, v)| v.into_owned())
-    } else {
-        Some(abs)
-    }
-}
-
-fn parse_ddg(html: &str) -> Vec<serde_json::Value> {
-    use std::sync::OnceLock;
-    static RESULT_A: OnceLock<regex::Regex> = OnceLock::new();
-    static SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
-    let re_a = RESULT_A.get_or_init(|| {
-        regex::Regex::new(r#"(?s)<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap()
-    });
-    let re_s = SNIPPET.get_or_init(|| {
-        regex::Regex::new(r#"(?s)<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#).unwrap()
-    });
-
-    re_a.captures_iter(html)
-        .filter_map(|c| {
-            let url = unwrap_ddg_href(&c[1])?;
-            // Snippet lives just after its link in the same result block
-            let after = c.get(0).map(|m| m.end()).unwrap_or(0);
-            let window = &html[after..(after + 2500).min(html.len())];
-            let snippet = re_s
-                .captures(window)
-                .map(|s| clip_chars(&strip_tags(&s[1]), 300))
-                .unwrap_or_default();
-            Some(serde_json::json!({
-                "title": strip_tags(&c[2]), "url": url, "snippet": snippet,
-            }))
-        })
-        .take(8)
-        .collect()
-}
-
-fn parse_mojeek(html: &str) -> Vec<serde_json::Value> {
-    use std::sync::OnceLock;
-    static TITLE_A: OnceLock<regex::Regex> = OnceLock::new();
-    static SNIP_P: OnceLock<regex::Regex> = OnceLock::new();
-    let re_a = TITLE_A.get_or_init(|| {
-        regex::Regex::new(r#"(?s)<a[^>]*class="title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap()
-    });
-    let re_s = SNIP_P.get_or_init(|| regex::Regex::new(r#"(?s)<p class="s">(.*?)</p>"#).unwrap());
-
-    re_a.captures_iter(html)
-        .filter_map(|c| {
-            let url = decode_entities(&c[1]);
-            if !url.starts_with("http") { return None; }
-            let after = c.get(0).map(|m| m.end()).unwrap_or(0);
-            let window = &html[after..(after + 2500).min(html.len())];
-            let snippet = re_s
-                .captures(window)
-                .map(|s| clip_chars(&strip_tags(&s[1]), 300))
-                .unwrap_or_default();
-            Some(serde_json::json!({
-                "title": strip_tags(&c[2]), "url": url, "snippet": snippet,
-            }))
-        })
-        .take(8)
-        .collect()
-}
-
-async fn web_search(query: &str) -> Result<String, String> {
-    let client = http_client(10)?;
-    let q: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
-
-    // DDG first; it rate-limits bursts with an anomaly page — Mojeek covers that
-    let engines = [
-        (format!("https://html.duckduckgo.com/html/?q={q}"), parse_ddg as fn(&str) -> Vec<serde_json::Value>),
-        (format!("https://www.mojeek.com/search?q={q}"), parse_mojeek),
-    ];
-    for (url, parse) in engines {
-        let Ok(resp) = client.get(&url).send().await else { continue };
-        let Ok(html) = resp.text().await else { continue };
-        let results = parse(&html);
-        if !results.is_empty() {
-            return Ok(serde_json::json!({ "results": results }).to_string());
-        }
-    }
-    Ok("{\"results\":[],\"note\":\"both engines returned nothing parseable — retry once with different wording, or fall back to navigate\"}".into())
-}
-
-async fn read_urls(urls: &[String]) -> Result<String, String> {
-    use std::sync::OnceLock;
-    static TITLE: OnceLock<regex::Regex> = OnceLock::new();
-    let re_title = TITLE.get_or_init(|| regex::Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap());
-
-    let client = http_client(12)?;
-    let futs = urls.iter().take(5).map(|u| {
-        let client = client.clone();
-        let u = u.clone();
-        async move {
-            match client.get(&u).send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    let body = resp.text().await.unwrap_or_default();
-                    // Bound regex work on pathological pages
-                    let body = clip_chars(&body, 600_000);
-                    let title = re_title
-                        .captures(&body)
-                        .map(|c| strip_tags(&c[1]))
-                        .unwrap_or_default();
-                    serde_json::json!({
-                        "url": u, "status": status, "title": title,
-                        "text": clip_chars(&strip_tags(&body), 5_000),
-                    })
-                }
-                Err(e) => serde_json::json!({ "url": u, "error": e.to_string() }),
-            }
-        }
-    });
-    let pages = futures_util::future::join_all(futs).await;
-    Ok(serde_json::Value::Array(pages).to_string())
-}
 
 /// Tools with no page/tab side effects — safe to run concurrently when the
 /// model emits several calls in one turn.
@@ -340,7 +175,20 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
     // Page tools take an optional tab_id — None targets the active tab
     let tab = args["tab_id"].as_str().filter(|s| !s.is_empty());
     let result: Result<String, String> = match name {
-        "web_search" => web_search(args["query"].as_str().unwrap_or("")).await,
+        "web_search" => {
+            // Models emit either shape — `queries` when they fan out, `query`
+            // when they don't, and some emit both. Accept all three.
+            let mut queries: Vec<String> = args["queries"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            if let Some(one) = args["query"].as_str() {
+                if !one.trim().is_empty() {
+                    queries.push(one.to_string());
+                }
+            }
+            web_search(app, &queries).await
+        }
         "read_url" => {
             let urls: Vec<String> = args["urls"]
                 .as_array()
@@ -349,7 +197,7 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
             if urls.is_empty() {
                 Err("urls array is empty".into())
             } else {
-                read_urls(&urls).await
+                read_urls(&urls, args["query"].as_str().unwrap_or("")).await
             }
         }
         "list_tabs" => Ok(list_tabs_json(app)),

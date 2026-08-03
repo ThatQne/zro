@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { X, Download, FolderOpen, FileCheck2, FileX2, Trash2, ExternalLink, Puzzle, Check } from "lucide-react";
+import { X, Download, FolderOpen, FileCheck2, FileX2, Trash2, ExternalLink, Puzzle, Check, Pause, Play, XCircle, ListX } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useDownloadsStore, DownloadItem } from "../store/downloads";
 import { useBrowserStore } from "../store/tabs";
@@ -44,7 +44,7 @@ function webstoreExtId(url: string | undefined): string | null {
 }
 
 export default function DownloadsPanel({ onClose }: Props) {
-  const { items, markSeen, clearFinished } = useDownloadsStore();
+  const { items, markSeen, clearFinished, clearAll } = useDownloadsStore();
   const { tabs, activeTabId } = useBrowserStore();
   const { autoInstall, autoErrors, items: exts } = useExtStore();
   const extId = webstoreExtId(tabs.find((t) => t.id === activeTabId)?.url);
@@ -97,6 +97,15 @@ export default function DownloadsPanel({ onClose }: Props) {
               style={{ background: "none", border: "none", cursor: "pointer", color: "#444", display: "flex" }}
             >
               <Trash2 size={12} />
+            </button>
+          )}
+          {items.length > 0 && (
+            <button
+              onClick={clearAll}
+              title="Cancel everything and clear the list"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "#444", display: "flex" }}
+            >
+              <ListX size={12} />
             </button>
           )}
           <button
@@ -163,6 +172,7 @@ export default function DownloadsPanel({ onClose }: Props) {
 
 function DownloadRow({ item }: { item: DownloadItem }) {
   const deleteFile = useDownloadsStore((s) => s.deleteFile);
+  const control = useDownloadsStore((s) => s.control);
   const [confirming, setConfirming] = useState(false);
   const icon =
     item.state === "active" ? (
@@ -194,6 +204,9 @@ function DownloadRow({ item }: { item: DownloadItem }) {
                 const rec = item.received ?? 0, tot = item.total ?? 0;
                 const spd = item.speed ? `${fmtBytes(item.speed)}/s` : "";
                 const eta = item.speed && tot > rec ? fmtEta((tot - rec) / item.speed) : "";
+                // Paused wins over the percentage line — a frozen "43%" with a
+                // live-looking speed reads as still running.
+                if (item.paused) return `paused  ·  ${fmtBytes(rec)}${tot > 0 ? " / " + fmtBytes(tot) : ""}`;
                 if (tot > 0) {
                   const pct = Math.min(100, Math.round((rec / tot) * 100));
                   return `${pct}%  ·  ${fmtBytes(rec)} / ${fmtBytes(tot)}${spd ? "  ·  " + spd : ""}${eta ? "  ·  " + eta : ""}`;
@@ -222,6 +235,27 @@ function DownloadRow({ item }: { item: DownloadItem }) {
           </div>
         )}
       </div>
+      {/* In-flight controls. Before these existed a running download couldn't
+          be paused OR stopped, and "Clear finished" skips active rows — so a
+          download that never settled was stuck in the list permanently. */}
+      {item.state === "active" && (
+        <>
+          <button
+            onClick={() => control(item.id, item.paused ? "resume" : "pause")}
+            title={item.paused ? "Resume" : "Pause"}
+            style={{ flexShrink: 0, display: "flex", background: "none", border: "none", cursor: "pointer", color: "#666", padding: 3 }}
+          >
+            {item.paused ? <Play size={12} /> : <Pause size={12} />}
+          </button>
+          <button
+            onClick={() => control(item.id, "cancel")}
+            title="Cancel download"
+            style={{ flexShrink: 0, display: "flex", background: "none", border: "none", cursor: "pointer", color: "#666", padding: 3 }}
+          >
+            <XCircle size={12} />
+          </button>
+        </>
+      )}
       {item.state === "done" && (
         <>
           <button

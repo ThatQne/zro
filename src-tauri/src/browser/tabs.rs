@@ -690,8 +690,15 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
             // callback's `sender` IS the operation, so we read bytes + uri off it
             // and emit a "progress" event the panel matches to its row by url.
             {
-                use webview2_com::{BytesReceivedChangedEventHandler, DownloadStartingEventHandler};
-                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
+                use webview2_com::{
+                    BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
+                    StateChangedEventHandler,
+                };
+                use webview2_com::Microsoft::Web::WebView2::Win32::{
+                    ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON,
+                    COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+                    COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
+                };
                 if let Ok(wv4) = core.cast::<ICoreWebView2_4>() {
                     let app_dl = app.clone();
                     let mut tok_dl = std::mem::zeroed();
@@ -710,11 +717,18 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                     let _ = op.TotalBytesToReceive(&mut total);
                                     let mut pu = PWSTR::null();
                                     let uri = if op.Uri(&mut pu).is_ok() { take_pwstr(pu) } else { String::new() };
+                                    // Path, not just URL: a redirected download
+                                    // reports a different final URL, and the old
+                                    // url-or-newest-active matching sprayed one
+                                    // download's bytes onto another row.
+                                    let mut pp = PWSTR::null();
+                                    let path = if op.ResultFilePath(&mut pp).is_ok() { take_pwstr(pp) } else { String::new() };
                                     let _ = app_p.emit(
                                         "download-event",
                                         serde_json::json!({
                                             "kind": "progress",
                                             "uri": uri,
+                                            "path": path,
                                             "received": received,
                                             "total": total,
                                         }),
@@ -726,6 +740,71 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             // The op holds the only ref while it downloads; keep the
                             // handler alive for that lifetime (a few bytes per file).
                             std::mem::forget(prog);
+
+                            // Completion, from the horse's mouth. Tauri's
+                            // DownloadEvent::Finished only carries a URL, and the
+                            // matcher fell back to "newest active row" when it
+                            // didn't match — so with two downloads running, one
+                            // finishing settled the WRONG row and left the other
+                            // stuck on "downloading" and un-clearable. The
+                            // operation knows its own ResultFilePath, which is
+                            // unique per download, so it settles exactly its row.
+                            let app_s = app_dl.clone();
+                            let mut tok_s = std::mem::zeroed();
+                            let state_h = StateChangedEventHandler::create(Box::new(
+                                move |sender, _| {
+                                    let Some(op) = sender else { return Ok(()) };
+                                    let mut st = COREWEBVIEW2_DOWNLOAD_STATE::default();
+                                    if op.State(&mut st).is_err() {
+                                        return Ok(());
+                                    }
+                                    if st == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
+                                        return Ok(()); // paused/resumed — still live
+                                    }
+                                    let mut pp = PWSTR::null();
+                                    let path = if op.ResultFilePath(&mut pp).is_ok() {
+                                        take_pwstr(pp)
+                                    } else {
+                                        String::new()
+                                    };
+                                    if path.is_empty() {
+                                        return Ok(());
+                                    }
+                                    let ok = st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
+                                    let reason = if ok {
+                                        None
+                                    } else {
+                                        let mut r = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON::default();
+                                        let _ = op.InterruptReason(&mut r);
+                                        Some(format!("interrupted ({})", r.0))
+                                    };
+                                    if let Some(id) =
+                                        crate::browser::downloads::id_for_path(&app_s, &path)
+                                    {
+                                        crate::browser::downloads::forget_op(id);
+                                    }
+                                    crate::browser::downloads::finish_by_path(
+                                        &app_s, &path, ok, reason,
+                                    );
+                                    Ok(())
+                                },
+                            ));
+                            let _ = op.add_StateChanged(&state_h, &mut tok_s);
+                            std::mem::forget(state_h);
+
+                            // Hand the live operation to the control commands
+                            // (cancel/pause/resume). Resolved by destination
+                            // path — by now wry's Requested hook has already
+                            // rewritten it to our unique Downloads-folder path.
+                            let mut pp = PWSTR::null();
+                            if op.ResultFilePath(&mut pp).is_ok() {
+                                let path = take_pwstr(pp);
+                                if let Some(id) =
+                                    crate::browser::downloads::id_for_path(&app_dl, &path)
+                                {
+                                    crate::browser::downloads::remember_op(id, op.clone());
+                                }
+                            }
                             Ok(())
                         },
                     ));

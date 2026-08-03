@@ -10,11 +10,13 @@
 pub mod eval;
 pub mod facts;
 pub mod providers;
+pub mod search;
 pub mod semantic;
 pub mod tools;
 
 pub use eval::*;
 pub use providers::*;
+pub use search::*;
 pub use semantic::*;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,10 +90,17 @@ pub async fn ask_ai(
          Only stop to ask the user when truly blocked — e.g. a login or 2FA screen \
          that needs their input.\n\
          WEB SEARCH: for any factual or current-info question call web_search FIRST — \
-         one call, instant titles+urls+snippets, no tab opened. Snippets often answer \
-         outright; if not, pass the best 2-3 urls to read_url in a SINGLE call (they \
-         fetch in parallel). NEVER navigate the visible tab to a search engine and \
-         click through results — that is 10x slower and churns the user's screen. \
+         one call, instant titles+urls+snippets+dates, no tab opened. Break the question \
+         into 2-4 differently-worded sub-queries and pass them ALL in that one call \
+         (they run in parallel and pages that surface for several sub-queries rank \
+         highest) — one phrasing finds one slice of the answer. Snippets often answer \
+         outright; if not, pass the best 2-3 urls to read_url in a SINGLE call, ALWAYS \
+         with the query parameter set, so long pages come back as the passages that \
+         answer it instead of their first screen. CHECK THE DATE on every result before \
+         using it for anything current — an undated or old page is not evidence about \
+         today, and if the top results are stale, search again with the year or month \
+         in the query. NEVER navigate the visible tab to a search engine and click \
+         through results — that is 10x slower and churns the user's screen. \
          Use navigate/click only when the task needs to interact with a page (forms, \
          logins, actions) or the user asked to open it.\n\
          OPERATING PAGES: read_page returns the interactive skeleton — dropdowns with \
