@@ -1,6 +1,6 @@
 [package]
 name = "zro"
-version = "0.1.11"
+version = "0.1.12"
 description = "zro browser"
 authors = ["ThatQne"]
 edition = "2021"
