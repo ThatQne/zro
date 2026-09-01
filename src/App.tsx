@@ -176,7 +176,7 @@ export default function App() {
 
   // Popups (window.open / target=_blank) → new tabs
   useEffect(() => {
-    const unsub = listen<{ url: string; external?: boolean }>("open-url", (e) => {
+    const unsub = listen<{ url: string; external?: boolean; background?: boolean }>("open-url", (e) => {
       if (e.payload.url && e.payload.url !== "about:blank") {
         // Link/popup opened from a tab inside a folder lands in that folder.
         // A URL handed to us by ANOTHER app has no source tab, so whatever
@@ -185,7 +185,7 @@ export default function App() {
         const folder = e.payload.external
           ? undefined
           : activeFolderId(s.tabs, s.activeTabId);
-        s.createTab(e.payload.url, folder);
+        s.createTab(e.payload.url, folder, { background: !!e.payload.background });
       }
     });
     return () => { unsub.then((u) => u()); };

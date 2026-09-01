@@ -20,6 +20,7 @@ const KIND_COLOR: Record<MemKind, string> = {
 };
 const EDGE_COLOR: Record<MemEdge["kind"], string> = {
   manual: "rgba(228,228,228,0.60)",
+  tag: "rgba(160,105,245,0.48)",
   semantic: "rgba(79,128,245,0.50)",
   domain: "rgba(130,130,130,0.30)",
   temporal: "rgba(130,130,130,0.16)",

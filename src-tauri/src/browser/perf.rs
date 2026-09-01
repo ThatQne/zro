@@ -20,6 +20,10 @@ pub(crate) const PERF_INIT_SCRIPT: &str = r#"
       var u = new URL(a.href, location.href);
       if (u.protocol !== 'https:' && u.protocol !== 'http:') return;
       if (u.origin !== location.origin) return;      // cheap + credential-safe
+      // YouTube owns its SPA preload/player lifecycle. A second browser-level
+      // document prefetch races that lifecycle and can leave the first player
+      // transition on its "content unavailable" fallback until a refresh.
+      if (/(^|\.)youtube\.com$/i.test(u.hostname)) return;
       var key = u.pathname + u.search;
       if (done.has(key) || done.size > 80) return;
       if (key === location.pathname + location.search) return;

@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 // without the panel being open.
 
 export type MemKind = "note" | "todo" | "link" | "image" | "clip" | "visit";
-export type EdgeKind = "manual" | "semantic" | "domain" | "temporal";
+export type EdgeKind = "manual" | "tag" | "semantic" | "domain" | "temporal";
 
 export interface MemNode {
   id: string;

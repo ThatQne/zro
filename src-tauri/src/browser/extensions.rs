@@ -761,6 +761,8 @@ pub async fn open_extension_popup(
     let created = std::time::Instant::now();
     let gained = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let closer = win.clone();
+    #[cfg(windows)]
+    let popup_hwnd = win.hwnd().ok().map(|h| h.0 as isize);
     win.on_window_event(move |event| {
         use std::sync::atomic::Ordering;
         match event {
@@ -773,6 +775,26 @@ pub async fn open_extension_popup(
                 let old_enough = created.elapsed() > std::time::Duration::from_millis(400);
                 let stale = created.elapsed() > std::time::Duration::from_millis(1500);
                 if (gained.load(Ordering::SeqCst) && old_enough) || stale {
+                    // Clipboard writes and permission UI can briefly move
+                    // focus from the WebView2 child without the user clicking
+                    // outside the popup. Only dismiss when Windows says a
+                    // different top-level window actually owns foreground.
+                    #[cfg(windows)]
+                    if let Some(raw) = popup_hwnd {
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            GetAncestor, GetForegroundWindow, GA_ROOT,
+                        };
+                        unsafe {
+                            let foreground = GetForegroundWindow();
+                            if foreground.0.is_null() {
+                                return;
+                            }
+                            let root = GetAncestor(foreground, GA_ROOT);
+                            if root.0 as isize == raw {
+                                return;
+                            }
+                        }
+                    }
                     let _ = closer.close();
                 }
             }

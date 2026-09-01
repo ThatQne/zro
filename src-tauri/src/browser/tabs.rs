@@ -31,6 +31,26 @@ fn shell_open_detached(uri: &str) {
     }
 }
 
+/// A page's NewWindowRequested callback does not expose the mouse button or
+/// modifier that opened the link. The callback is synchronous with the input
+/// gesture, though, so the native key state still tells us whether this was a
+/// browser-style background-tab gesture.
+#[cfg(windows)]
+fn background_tab_gesture() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_CONTROL, VK_MBUTTON,
+    };
+    unsafe {
+        GetAsyncKeyState(VK_MBUTTON.0 as i32) < 0
+            || GetAsyncKeyState(VK_CONTROL.0 as i32) < 0
+    }
+}
+
+#[cfg(not(windows))]
+fn background_tab_gesture() -> bool {
+    false
+}
+
 /// Per-tab URL trail backing our own back/forward when the renderer's session
 /// history is gone (e.g. lazily restored tabs).
 pub(crate) struct TabHistory {
@@ -323,9 +343,11 @@ pub(crate) fn on_user_active(app: &AppHandle) {
         | IDLE_ACTIVE_FROZEN.swap(false, Ordering::SeqCst);
     #[cfg(not(windows))]
     let was_idle = false;
-    if was_min || was_idle {
-        thaw_active_tab(app);
-    }
+    // Always perform the cheap visibility/bounds repair on a real focus
+    // return. The atomic flags can be cleared by an out-of-order Alt+Tab or
+    // resize event even though WebView2 is still hidden/parked.
+    let _ = (was_min, was_idle);
+    thaw_active_tab(app);
 }
 
 /// Resume + show the active tab's renderer and put it back at its layout rect.
@@ -473,7 +495,6 @@ pub(crate) fn idle_watch(app: &AppHandle) {
     use std::sync::atomic::Ordering;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut away_since: Option<std::time::Instant> = None;
         loop {
             let any_frozen = IDLE_FROZEN.load(Ordering::SeqCst) || IDLE_ACTIVE_FROZEN.load(Ordering::SeqCst);
             // Poll fast while frozen (first input thaws in ~3s); a lean 6s
@@ -485,35 +506,18 @@ pub(crate) fn idle_watch(app: &AppHandle) {
             let act_frozen = IDLE_ACTIVE_FROZEN.load(Ordering::SeqCst);
             let (in_front, minimized) = zro_in_front(&app).unwrap_or((true, false));
 
-            // ── zro is NOT the active window (minimized or behind another app)
-            // The real "fans rise while minimized" cause: background tabs kept
-            // running because the machine wasn't idle (user busy elsewhere).
-            // Freeze background pages immediately; freeze the visible tab too
-            // once it's clearly abandoned (minimized now, or unfocused a while).
+            // Ordinary Alt+Tab is not a renderer lifecycle event. Freezing all
+            // background webviews on every focus loss piles TrySuspend/hide
+            // work onto the UI thread when the user cycles quickly, and an
+            // out-of-order completion can hide the newly active tab. Actual
+            // minimization has its own 3-second freeze path; machine-idle work
+            // remains below.
             if !in_front {
-                if away_since.is_none() { away_since = Some(std::time::Instant::now()); }
-                if !bg_frozen {
-                    IDLE_FROZEN.store(true, Ordering::SeqCst);
-                    let a = app.clone();
-                    let _ = app.run_on_main_thread(move || freeze_background_pages(&a));
-                }
-                // Freeze the VISIBLE tab only when it truly can't be seen or
-                // the user left the machine: minimized, or no input anywhere
-                // for the long floor. Merely unfocused is NOT enough — reading
-                // zro side-by-side while typing in another app is normal use,
-                // and hiding the page then made the window turn see-through.
-                let away = away_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-                let user_gone = system_idle_ms() >= ACTIVE_FREEZE_FLOOR_MS;
-                if (minimized || (away >= 60 && user_gone)) && !act_frozen {
-                    IDLE_ACTIVE_FROZEN.store(true, Ordering::SeqCst);
-                    let a = app.clone();
-                    let _ = app.run_on_main_thread(move || freeze_active_page(&a));
-                }
+                let _ = minimized; // on_minimized owns this case
                 continue;
             }
 
             // ── zro is in front → the user is here.
-            away_since = None;
             let threshold = IDLE_FREEZE_MS.load(Ordering::SeqCst);
             let idle = if threshold == 0 { 0 } else { system_idle_ms() };
 
@@ -1341,7 +1345,11 @@ fn spawn_webview(
             if features.size().is_some() || is_auth_url(&u) {
                 return tauri::webview::NewWindowResponse::Allow;
             }
-            let _ = app_popup.emit("open-url", serde_json::json!({ "url": u }));
+            let background = background_tab_gesture();
+            let _ = app_popup.emit(
+                "open-url",
+                serde_json::json!({ "url": u, "background": background }),
+            );
             tauri::webview::NewWindowResponse::Deny
         })
         .on_download(move |_wv, event| handle_download(&app_dl, event))

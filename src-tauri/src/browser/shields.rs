@@ -477,6 +477,55 @@ fn is_tracking_key(k: &str) -> bool {
     kl.starts_with("utm_") || TRACKING_PARAMS.contains(&kl.as_str())
 }
 
+/// Sites sometimes attach an entire analytics/session payload to an otherwise
+/// stable content URL. These are stricter, site-aware canonical forms: unlike
+/// the generic tracking list, each rule knows which parameters are actually
+/// required to identify the content.
+pub(crate) fn canonicalize_site_url(raw: &str) -> Option<String> {
+    let mut u = url::Url::parse(raw).ok()?;
+    let host = u.host_str()?.trim_start_matches("www.").to_ascii_lowercase();
+    let path = u.path().to_string();
+    let mut changed = false;
+
+    if host == "roblox.com" {
+        let mut parts = path.trim_start_matches('/').split('/');
+        let is_game = parts.next() == Some("games")
+            && parts.next().is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
+        if is_game && (u.query().is_some() || u.fragment().is_some()) {
+            u.set_query(None);
+            u.set_fragment(None);
+            changed = true;
+        }
+    } else if (host == "youtube.com" && path == "/watch")
+        || (host == "youtu.be" && path.len() > 1)
+    {
+        // Keep only parameters that change what/where the user is watching.
+        // Discovery provenance (`pp`, `feature`, `si`, etc.) is not content.
+        let allowed = ["v", "list", "index", "start", "t"];
+        let pairs: Vec<(String, String)> = u
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let kept: Vec<(String, String)> = pairs
+            .iter()
+            .filter(|(k, _)| allowed.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        if kept.len() != pairs.len() {
+            u.set_query(None);
+            if !kept.is_empty() {
+                let mut qp = u.query_pairs_mut();
+                for (k, v) in kept {
+                    qp.append_pair(&k, &v);
+                }
+            }
+            changed = true;
+        }
+    }
+
+    changed.then(|| u.to_string())
+}
+
 /// Return an https:// version of an http:// URL, or None if not eligible
 /// (localhost, raw IPs, .local/.onion are left alone).
 pub(crate) fn upgrade_https(raw: &str) -> Option<String> {
@@ -536,6 +585,10 @@ pub(crate) fn rewrite_navigation(url: &str) -> Option<String> {
     if STRIP_PARAMS.load(Ordering::Relaxed) {
         let base = out.as_deref().unwrap_or(url);
         if let Some(st) = strip_tracking_params(base) {
+            out = Some(st);
+        }
+        let base = out.as_deref().unwrap_or(url);
+        if let Some(st) = canonicalize_site_url(base) {
             out = Some(st);
         }
     }
@@ -629,6 +682,23 @@ mod tests {
         // Nothing tracked → None (no rewrite, no re-navigation)
         assert_eq!(strip_tracking_params("https://e.com/p?q=rust&page=2"), None);
         assert_eq!(strip_tracking_params("https://e.com/p"), None);
+    }
+
+    #[test]
+    fn canonicalizes_roblox_game_urls() {
+        assert_eq!(
+            canonicalize_site_url("https://www.roblox.com/games/177052655/Twisted-Murderer?gameSetTypeId=100000000&position=41#top"),
+            Some("https://www.roblox.com/games/177052655/Twisted-Murderer".into())
+        );
+        assert_eq!(canonicalize_site_url("https://www.roblox.com/users/1/profile?x=1"), None);
+    }
+
+    #[test]
+    fn canonicalizes_youtube_without_losing_video_identity() {
+        assert_eq!(
+            canonicalize_site_url("https://www.youtube.com/watch?v=abc123&pp=ygUEdGVzdA%3D%3D&feature=share&t=42"),
+            Some("https://www.youtube.com/watch?v=abc123&t=42".into())
+        );
     }
 
     #[test]

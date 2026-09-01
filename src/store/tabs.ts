@@ -214,6 +214,12 @@ function logErr(ctx: string, err: unknown) {
   invoke("log_js", { msg: `${ctx}: ${err}` }).catch(() => {});
 }
 
+// Native child-webview moves must be serialized. Rapid Ctrl+Tab presses used
+// to overlap switch_browser_tab calls, leaving an older call free to hide the
+// webview a newer call had just activated. Intermediate requests are safely
+// coalesced because the frontend has already selected the latest tab.
+let nativeSwitchQueue: Promise<void> = Promise.resolve();
+
 /** Profiles are separate browsers — tabs AND folders are visible only inside
  *  their own profile's space. */
 export function inProfile(x: { profileId?: string }, profileId: string): boolean {
@@ -243,7 +249,11 @@ interface BrowserStore {
   sidebarPins: number;
   settings: Settings;
 
-  createTab: (url?: string, folderId?: string, opts?: { focusUrl?: boolean }) => Promise<void>;
+  createTab: (
+    url?: string,
+    folderId?: string,
+    opts?: { focusUrl?: boolean; background?: boolean }
+  ) => Promise<void>;
   closeTab: (id: string) => Promise<void>;
   closeTabs: (ids: string[]) => Promise<void>;
   closeOtherTabs: (keepIds: string[]) => Promise<void>;
@@ -365,10 +375,11 @@ export const useBrowserStore = create<BrowserStore>()(
         const id = `tab-${uuidv4()}`;
         const normalized = normalizeUrl(target, get().settings.searchEngine);
         const profileId = get().settings.activeProfileId;
+        const background = opts?.background ?? false;
         set((s) => ({
           tabs: [
             // Outgoing active tab's idle clock starts now
-            ...s.tabs.map((t) => (t.id === s.activeTabId ? { ...t, lastActiveAt: Date.now() } : t)),
+            ...s.tabs.map((t) => (!background && t.id === s.activeTabId ? { ...t, lastActiveAt: Date.now() } : t)),
             {
               id, url: normalized, title: "New Tab", favicon: faviconFor(normalized),
               folderId, isLoading: true, incognito: s.isIncognito || undefined,
@@ -376,13 +387,14 @@ export const useBrowserStore = create<BrowserStore>()(
               lastActiveAt: Date.now(),
             },
           ],
-          activeTabId: id,
-          selectedTabIds: [],
+          activeTabId: background ? s.activeTabId : id,
+          selectedTabIds: background ? s.selectedTabIds : [],
         }));
         try {
           await invoke("create_browser_tab", {
             id, url: normalized,
             profile: profileId !== "default" ? profileId : null,
+            background,
           });
         } catch (err) {
           logErr("create_browser_tab", err);
@@ -481,19 +493,26 @@ export const useBrowserStore = create<BrowserStore>()(
               : t
           ),
         }));
-        try {
-          const exists = await invoke<boolean>("switch_browser_tab", { id });
-          if (!exists) {
-            // Restored / hibernated — webview is created lazily on activation
-            set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, isLoading: true } : t)) }));
-            await invoke("create_browser_tab", {
-              id, url: tab.url,
-              profile: tab.profileId && tab.profileId !== "default" ? tab.profileId : null,
-            });
+        const run = async () => {
+          // A newer click/key press won while this request waited in line.
+          if (get().activeTabId !== id) return;
+          try {
+            const exists = await invoke<boolean>("switch_browser_tab", { id });
+            if (!exists && get().activeTabId === id) {
+              // Restored / hibernated — webview is created lazily on activation
+              set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, isLoading: true } : t)) }));
+              await invoke("create_browser_tab", {
+                id, url: tab.url,
+                profile: tab.profileId && tab.profileId !== "default" ? tab.profileId : null,
+              });
+            }
+          } catch (err) {
+            logErr("switch_browser_tab", err);
           }
-        } catch (err) {
-          logErr("switch_browser_tab", err);
-        }
+        };
+        const queued = nativeSwitchQueue.then(run, run);
+        nativeSwitchQueue = queued.catch(() => {});
+        await queued;
       },
 
       cycleTab: async (dir) => {
@@ -724,7 +743,7 @@ export const useBrowserStore = create<BrowserStore>()(
           },
         }));
       },
-      addHistory: (entry) =>
+      addHistory: (entry) => {
         set((s) => {
           // Dedupe: refreshes / redirect hops / SPA re-fires of the same URL
           // within 5 minutes update the existing entry instead of stacking
@@ -733,7 +752,13 @@ export const useBrowserStore = create<BrowserStore>()(
             .slice(0, 50)
             .filter((h) => !(h.url === entry.url && h.visitedAt > cutoff));
           return { history: [entry, ...recent, ...s.history.slice(50)].slice(0, 5000) };
-        }),
+        });
+        // The memory graph is built from actual browsing, not only things the
+        // user manually saves. The backend dedupes canonical URLs and links
+        // the visit into its browsing trail; callers already exclude
+        // incognito tabs before reaching this action.
+        invoke("mem_ingest_visit", { url: entry.url, title: entry.title }).catch(() => {});
+      },
       removeHistory: (visitedAt, url) =>
         set((s) => ({
           history: s.history.filter((h) => !(h.visitedAt === visitedAt && h.url === url)),

@@ -80,6 +80,9 @@ export default function Sidebar() {
   const tabsSnapshot = useRef<Tab[] | null>(null);
   const menuGuard = useRef(0);
   const flyoutRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listScrollTop = useRef(0);
+  const collapsePoint = useRef<{ x: number; y: number } | null>(null);
 
   const looseTabs = tabs.filter((t) => !t.folderId);
 
@@ -122,10 +125,19 @@ export default function Sidebar() {
     clearTimeout(openTimer.current);
   }
 
-  function handleCollapse() {
+  function handleCollapse(e?: React.MouseEvent) {
+    if (e) collapsePoint.current = { x: e.clientX, y: e.clientY };
     clearTimeout(openTimer.current);
     clearTimeout(leaveTimer.current);
     leaveTimer.current = setTimeout(() => {
+      // Switching child webviews can synthesize a mouseleave while the cursor
+      // is still physically over the sidebar. Do not collapse on that event;
+      // a real exit has coordinates outside the flyout rect.
+      const rect = flyoutRef.current?.getBoundingClientRect();
+      const p = collapsePoint.current;
+      if (rect && p && p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom) {
+        return;
+      }
       // Dragging, a native menu open, or a live editor (rename / folder
       // style / new-folder input) — stay expanded and re-check later
       const pinned = useBrowserStore.getState().sidebarPins > 0;
@@ -245,16 +257,50 @@ export default function Sidebar() {
     clearTimeout(dwellTimer.current);
     setActiveId(null);
     setOverId(null);
+    const snapshot = tabsSnapshot.current;
     tabsSnapshot.current = null;
-
-    if (!over) return;
-
-    const ovStr = over.id as string;
     const actStr = active.id as string;
     const sel =
       selectedTabIds.length > 1 && selectedTabIds.includes(actStr)
         ? selectedTabIds
         : [actStr];
+
+    // On a quick one-row flick dnd-kit can finish before its collision pass
+    // advances from the dragged row to the neighbouring row. `over` is then
+    // still the active item (or briefly null), and the old code committed
+    // nothing, so the tab snapped home. The physical displacement is the
+    // authoritative fallback for that frame.
+    if ((!over || over.id === active.id) && snapshot && sel.length === 1) {
+      const initial = active.rect.current.initial;
+      const translated = active.rect.current.translated;
+      const dy = initial && translated ? translated.top - initial.top : 0;
+      if (Math.abs(dy) >= 12) {
+        const dragged = snapshot.find((t) => t.id === actStr);
+        if (dragged) {
+          const peers = snapshot.filter(
+            (t) => t.folderId === dragged.folderId
+              && !!t.incognito === !!dragged.incognito
+              && (t.profileId ?? "default") === (dragged.profileId ?? "default")
+          );
+          const from = peers.findIndex((t) => t.id === actStr);
+          const rows = Math.max(1, Math.round(Math.abs(dy) / 34));
+          const to = Math.max(0, Math.min(peers.length - 1, from + (dy < 0 ? -rows : rows)));
+          const target = peers[to];
+          if (target && target.id !== actStr) {
+            placeTabs([actStr], target.folderId, target.id, dy > 0);
+          }
+        }
+      }
+      clearSelection();
+      return;
+    }
+
+    if (!over) {
+      clearSelection();
+      return;
+    }
+
+    const ovStr = over.id as string;
 
     const overTab = useBrowserStore.getState().tabs.find((t) => t.id === ovStr);
     if (ovStr.startsWith("folder-")) {
@@ -409,7 +455,11 @@ export default function Sidebar() {
               onMouseLeave={handleCollapse}
             >
               <ProfileStrip expanded />
-              <RootDropZone isOver={overId === "root-zone"}>
+              <RootDropZone
+                isOver={overId === "root-zone"}
+                listRef={listRef}
+                savedScrollTop={listScrollTop}
+              >
                 {/* Folders */}
                 {folders.map((folder) => (
                   <FolderDropZone key={folder.id} folderId={folder.id} isOver={overId === folder.id}>
@@ -531,11 +581,21 @@ export default function Sidebar() {
   );
 }
 
-function RootDropZone({ isOver, children }: { isOver: boolean; children: React.ReactNode }) {
+function RootDropZone({ isOver, children, listRef, savedScrollTop }: {
+  isOver: boolean;
+  children: React.ReactNode;
+  listRef: React.MutableRefObject<HTMLDivElement | null>;
+  savedScrollTop: React.MutableRefObject<number>;
+}) {
   const { setNodeRef } = useDroppable({ id: "root-zone" });
   return (
     <div
-      ref={setNodeRef}
+      ref={(node) => {
+        setNodeRef(node);
+        listRef.current = node;
+        if (node) node.scrollTop = savedScrollTop.current;
+      }}
+      onScroll={(e) => { savedScrollTop.current = e.currentTarget.scrollTop; }}
       style={{
         flex: 1, overflowY: "auto", overflowX: "hidden", padding: "8px 4px 4px",
         background: isOver ? "rgba(79,128,245,0.04)" : "transparent",
