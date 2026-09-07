@@ -18,6 +18,30 @@ const INDEX_PAGE_JS: &str = r#"
 
 const EMBED_MODEL: &str = "nomic-embed-text";
 
+fn index_excerpt(text: &str) -> &str {
+    let mut end = text.len().min(2000);
+    while !text.is_char_boundary(end) { end -= 1; }
+    &text[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::index_excerpt;
+
+    #[test]
+    fn indexing_preserves_unicode_boundaries() {
+        for suffix in ["é", "具", "🧠"] {
+            for offset in 1997..2001 {
+                let text = format!("{}{}end", "a".repeat(offset), suffix);
+                let excerpt = index_excerpt(&text);
+                assert!(excerpt.len() <= 2000);
+                assert!(text.starts_with(excerpt));
+            }
+        }
+        assert_eq!(index_excerpt("short 🧠 text"), "short 🧠 text");
+    }
+}
+
 pub struct MemoryDoc {
     pub url: String,
     pub title: String,
@@ -86,7 +110,7 @@ pub async fn index_page(
         if m.seen_urls.contains(&url) { return Ok(()); }
     }
 
-    let doc_text = format!("{title}\n{}", &text[..text.len().min(2000)]);
+    let doc_text = format!("{title}\n{}", index_excerpt(&text));
     let vec = embed(&doc_text).await?; // fails silently upstream if Ollama down
 
     let mut m = memory.lock().unwrap();

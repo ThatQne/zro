@@ -264,7 +264,10 @@ pub fn run() {
                             api.prevent_close();
                             let app = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
-                                browser::session_cookies::snapshot(&app).await;
+                                let _ = tokio::time::timeout(
+                                    std::time::Duration::from_secs(3),
+                                    browser::session_cookies::snapshot(&app),
+                                ).await;
                                 if let Some(w) = app.get_window("main") {
                                     let _ = w.destroy();
                                 }
@@ -280,7 +283,13 @@ pub fn run() {
                         // Self-heal any stuck freeze/hide state the moment the
                         // user is back — covers missed restore events and the
                         // idle watchdog's poll latency ("see-through window")
-                        browser::tabs::on_user_active(&app_handle);
+                        // Leave the native focus callback before changing
+                        // WebView2 visibility/bounds: those calls can emit
+                        // another focus event while the runtime is borrowed.
+                        let app = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            browser::tabs::on_user_active(&app);
+                        });
                         if let Some(popup) = app_handle.get_webview_window("ext-popup") {
                             let _ = popup.close();
                         }

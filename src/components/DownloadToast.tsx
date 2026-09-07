@@ -30,7 +30,7 @@ function fmtBytes(n: number): string {
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
 }
 
-export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void }) {
+export default function DownloadToast({ onOpenPanel, panelOpen }: { onOpenPanel: () => void; panelOpen: boolean }) {
   const items = useDownloadsStore((s) => s.items);
   const control = useDownloadsStore((s) => s.control);
   // Newest row, whatever its state — that's the one the user just acted on.
@@ -51,12 +51,16 @@ export default function DownloadToast({ onOpenPanel }: { onOpenPanel: () => void
   // every state change so a long download doesn't time out mid-flight.
   const state = latest?.state;
   useEffect(() => {
-    if (!latest || state === "active") return;
+    if (id == null || state === "active") return;
     const t = setTimeout(() => setExpired(true), HOLD_AFTER_DONE_MS);
     return () => clearTimeout(t);
-  }, [id, state, latest]);
+  }, [id, state]);
 
-  const visible = !!latest && !expired && dismissedId !== latest.id;
+  useEffect(() => {
+    if (panelOpen && id != null) setDismissedId(id);
+  }, [panelOpen, id]);
+
+  const visible = !panelOpen && !!latest && !expired && dismissedId !== latest.id;
 
   // Chrome renders ABOVE the page webview only where a region hole is punched
   // (see store/overlays) — without this the card is invisible over any page.

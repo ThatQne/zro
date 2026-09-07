@@ -195,6 +195,7 @@ function TabItemView({ tab, isActive, isSelected, onContextMenu, collapsed, fold
   return (
     <motion.div
       ref={dnd.setNodeRef}
+      data-tab-id={tab.id}
       {...dnd.attributes}
       {...dnd.listeners}
       animate={{ backgroundColor: bg }}

@@ -174,6 +174,16 @@ pub(crate) fn suspend_webview_covering(
     let app = app.clone();
     let label = label.to_string();
     let _ = wv.with_webview(move |pwv| unsafe {
+        // The UI may have restored/switched tabs since this work was queued.
+        // Never apply a stale background/minimize hide to an active page.
+        if hide_first && !MINIMIZED.load(std::sync::atomic::Ordering::SeqCst)
+            && !IDLE_ACTIVE_FROZEN.load(std::sync::atomic::Ordering::SeqCst) {
+            let state = app.state::<Mutex<BrowserState>>();
+            let s = state.lock().unwrap();
+            if s.active_tab_id.as_ref().map(|id| s.labels.get(id).unwrap_or(id)) == Some(&label) {
+                return;
+            }
+        }
         let controller = pwv.controller();
         let Ok(core) = controller.CoreWebView2() else { return };
         if let Ok(wv8) = core.cast::<ICoreWebView2_8>() {
@@ -343,11 +353,15 @@ pub(crate) fn on_user_active(app: &AppHandle) {
         | IDLE_ACTIVE_FROZEN.swap(false, Ordering::SeqCst);
     #[cfg(not(windows))]
     let was_idle = false;
-    // Always perform the cheap visibility/bounds repair on a real focus
-    // return. The atomic flags can be cleared by an out-of-order Alt+Tab or
-    // resize event even though WebView2 is still hidden/parked.
-    let _ = (was_min, was_idle);
-    thaw_active_tab(app);
+    // Only thaw after a freeze. Ordinary focus changes need a stacking
+    // repair, without another show/bounds cycle.
+    if was_min || was_idle {
+        thaw_active_tab(app);
+    } else {
+        // Raising chrome repairs stacking without showing/resizing the page
+        // again, which can itself trigger another native focus notification.
+        super::overlay::update_ui_region(app);
+    }
 }
 
 /// Resume + show the active tab's renderer and put it back at its layout rect.
@@ -599,6 +613,27 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
     let _ = wv.with_webview(move |pwv| unsafe {
         let controller = pwv.controller();
         if let Ok(core) = controller.CoreWebView2() {
+            let app_links = app.clone();
+            let handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut message = PWSTR::null();
+                    if args.TryGetWebMessageAsString(&mut message).is_ok() {
+                        let text = take_pwstr(message);
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if value["type"] == "zro-background-link" {
+                                if let Some(url) = value["url"].as_str().and_then(|u| url::Url::parse(u).ok()) {
+                                    if matches!(url.scheme(), "http" | "https") {
+                                        let _ = app_links.emit("open-url", serde_json::json!({ "url": url.as_str(), "background": true }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }));
+            let mut message_token = 0;
+            let _ = core.add_WebMessageReceived(&handler, &mut message_token);
             // Present as plain Chrome. WebView2's default UA carries "Edg/…"
             // and its client-hint brands say "Microsoft Edge WebView2" — sites
             // with embedded-browser blocklists (Twitch's supported-browsers
@@ -1137,8 +1172,15 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
 
             // Element fullscreen (video players): page takes the whole window
             let app_fs = app.clone();
+            let label_fs = id.clone();
             let mut tok3 = std::mem::zeroed();
             let fs_handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _| {
+                let is_active = {
+                    let state = app_fs.state::<Mutex<BrowserState>>();
+                    let s = state.lock().unwrap();
+                    s.active_tab_id.as_ref().map(|id| s.labels.get(id).unwrap_or(id)) == Some(&label_fs)
+                };
+                if !is_active { return Ok(()); }
                 if let Some(core) = sender {
                     let mut fs = BOOL::default();
                     if core.ContainsFullScreenElement(&mut fs).is_ok() {

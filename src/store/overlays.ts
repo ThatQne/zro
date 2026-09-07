@@ -9,11 +9,19 @@ export interface OverlayRect { x: number; y: number; w: number; h: number; r: nu
 
 const rects = new Map<string, OverlayRect>();
 let raf = 0;
+let inFlight = false;
+let dirty = false;
 
 function flush() {
   raf = 0;
+  if (inFlight) { dirty = true; return; }
+  dirty = false;
+  inFlight = true;
   const list = [...rects.values()];
-  invoke("set_overlays", { rects: list }).catch(() => {});
+  invoke("set_overlays", { rects: list }).catch(() => {}).finally(() => {
+    inFlight = false;
+    if (dirty) schedule();
+  });
 }
 
 function schedule() {

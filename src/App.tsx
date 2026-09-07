@@ -501,9 +501,7 @@ export default function App() {
 
         {/* Recent-download card, anchored under the downloads button. Skipped
             while the full panel is open — it would just say the same thing. */}
-        {panel !== "downloads" && (
-          <DownloadToast onOpenPanel={() => setPanel("downloads")} />
-        )}
+        <DownloadToast panelOpen={panel === "downloads"} onOpenPanel={() => setPanel("downloads")} />
 
         {/* Incognito unlock gate (Windows Hello / passcode) */}
         <AnimatePresence>

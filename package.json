@@ -1,13 +1,15 @@
 {
   "name": "zro",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "license": "AGPL-3.0-or-later OR LicenseRef-Commercial",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "clean:build": "cargo clean --manifest-path src-tauri/Cargo.toml",
+    "clean:all": "cargo clean --manifest-path src-tauri/Cargo.toml && cargo clean --manifest-path zro-installer/src-tauri/Cargo.toml",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

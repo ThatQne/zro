@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
@@ -60,6 +60,7 @@ export default function Sidebar() {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
+  const dragging = useRef(false);
   const [overId, setOverId] = useState<string | null>(null);
   // The dragged tab's REAL row width — DragStack used to hardcode 196px
   // while the actual flyout row is ~212px, leaving an uncovered strip on the
@@ -74,15 +75,47 @@ export default function Sidebar() {
   const openTimer = useRef<ReturnType<typeof setTimeout>>();
   // Hovering a CLOSED folder mid-drag for 1s springs it open
   const dwellTimer = useRef<ReturnType<typeof setTimeout>>();
-  // Pre-drag tab order — cross-container moves happen LIVE during the drag
-  // (that's what makes rows shift with the normal animation), so a cancelled
-  // drag must put everything back where it was.
+  // Starting order for the fast-drop displacement fallback.
   const tabsSnapshot = useRef<Tab[] | null>(null);
   const menuGuard = useRef(0);
   const flyoutRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const listScrollTop = useRef(0);
-  const collapsePoint = useRef<{ x: number; y: number } | null>(null);
+  const previousTabIds = useRef(new Set(allTabs.map((t) => t.id)));
+  const pendingReveal = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeTabId && !previousTabIds.current.has(activeTabId)) pendingReveal.current = activeTabId;
+    previousTabIds.current = new Set(allTabs.map((t) => t.id));
+    if (!expanded || !pendingReveal.current) return;
+    const frame = requestAnimationFrame(() => {
+      const row = listRef.current?.querySelector(`[data-tab-id="${CSS.escape(pendingReveal.current!)}"]`);
+      if (row) {
+        row.scrollIntoView({ block: "nearest" });
+        pendingReveal.current = null;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [allTabs, activeTabId, expanded]);
+
+  useEffect(() => {
+    const reset = () => {
+      clearTimeout(openTimer.current);
+      clearTimeout(leaveTimer.current);
+      clearTimeout(dwellTimer.current);
+      tabsSnapshot.current = null;
+      dragging.current = false;
+      setActiveId(null);
+      setOverId(null);
+      setExpanded(false);
+    };
+    window.addEventListener("blur", reset);
+    return () => {
+      window.removeEventListener("blur", reset);
+      clearTimeout(openTimer.current);
+      clearTimeout(leaveTimer.current);
+      clearTimeout(dwellTimer.current);
+    };
+  }, []);
 
   const looseTabs = tabs.filter((t) => !t.folderId);
 
@@ -125,23 +158,16 @@ export default function Sidebar() {
     clearTimeout(openTimer.current);
   }
 
-  function handleCollapse(e?: React.MouseEvent) {
-    if (e) collapsePoint.current = { x: e.clientX, y: e.clientY };
+  function handleCollapse() {
     clearTimeout(openTimer.current);
     clearTimeout(leaveTimer.current);
     leaveTimer.current = setTimeout(() => {
-      // Switching child webviews can synthesize a mouseleave while the cursor
-      // is still physically over the sidebar. Do not collapse on that event;
-      // a real exit has coordinates outside the flyout rect.
-      const rect = flyoutRef.current?.getBoundingClientRect();
-      const p = collapsePoint.current;
-      if (rect && p && p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom) {
-        return;
-      }
+      // Re-entry cancels this timer. Do not keep a mouseleave coordinate:
+      // page webviews stop delivering pointer events to the chrome document.
       // Dragging, a native menu open, or a live editor (rename / folder
       // style / new-folder input) — stay expanded and re-check later
       const pinned = useBrowserStore.getState().sidebarPins > 0;
-      if (activeId || pinned || Date.now() - menuGuard.current < 2500) {
+      if (dragging.current || pinned || Date.now() - menuGuard.current < 2500) {
         handleCollapse();
         return;
       }
@@ -175,13 +201,12 @@ export default function Sidebar() {
   // dropping a tab. Fix is to not touch the overlay system during drag at
   // all; only the real row width (for the ghost's own sizing) is captured.
   function handleDragStart({ active }: DragStartEvent) {
+    dragging.current = true;
     setActiveId(active.id as string);
     clearTimeout(leaveTimer.current);
     const r = active.rect.current.initial;
     if (r) setDragWidth(r.width);
-    // Cross-container moves are applied to the store LIVE during the drag
-    // (that's what makes rows part and close with the normal tab animation
-    // instead of an insertion line) — a cancelled drag restores this.
+    // Keep the source order stable until the final drop.
     tabsSnapshot.current = useBrowserStore.getState().tabs;
   }
 
@@ -189,46 +214,24 @@ export default function Sidebar() {
   // is dwell-open: hold over a CLOSED folder for 1s and it opens (and then
   // behaves like any open folder). Nothing auto-closes afterwards.
   //
-  // Crossing into a different container moves the dragged tab there IN THE
-  // STORE immediately: the source list closes its gap, the target list makes
-  // room, both with the standard sortable animation — same feel as
-  // reordering within a list. Same-container hovers are dnd-kit's own
-  // preview (no store writes), and the final exact position lands on drop.
-  function handleDragOver({ active, over }: DragOverEvent) {
+  // Hover selects a drop target; moving between containers commits on drop.
+  function handleDragOver({ over }: DragOverEvent) {
     const id = (over?.id as string) ?? null;
     setOverId(id);
     clearTimeout(dwellTimer.current);
 
     if (!id) return;
-    const actStr = active.id as string;
     const s = useBrowserStore.getState();
-    const container = s.tabs.find((t) => t.id === actStr)?.folderId;
 
     if (id.startsWith("folder-")) {
       const f = s.folders.find((x) => x.id === id);
       if (f && !f.isOpen) {
         dwellTimer.current = setTimeout(() => toggleFolder(id), 1000);
       }
-      if (container !== id) {
-        // Entering via the header → tail of the folder (drop here keeps it)
-        placeTabs([actStr], id, null, true);
-      }
       return;
     }
-    if (id === "root-zone") {
-      if (container !== undefined) {
-        placeTabs([actStr], undefined, null, true);
-      }
-      return;
-    }
-    const overTab = s.tabs.find((t) => t.id === id);
-    if (overTab && overTab.id !== actStr && overTab.folderId !== container) {
-      const a = active.rect.current.translated;
-      const after =
-        !!a && !!over?.rect &&
-        a.top + a.height / 2 > over.rect.top + over.rect.height / 2;
-      placeTabs([actStr], overTab.folderId, id, after);
-    }
+    // Commit container changes only on drop. Moving the active row between
+    // sortable contexts during collision measurement can oscillate forever.
   }
 
   function handleDragMove({ active, over }: DragMoveEvent) {
@@ -254,6 +257,7 @@ export default function Sidebar() {
   };
 
   function handleDragEnd({ active, over }: DragEndEvent) {
+    dragging.current = false;
     clearTimeout(dwellTimer.current);
     setActiveId(null);
     setOverId(null);
@@ -422,14 +426,11 @@ export default function Sidebar() {
             onDragMove={handleDragMove}
             onDragEnd={handleDragEnd}
             onDragCancel={() => {
+              dragging.current = false;
               clearTimeout(dwellTimer.current);
               setActiveId(null);
               setOverId(null);
-              // Undo any live cross-container moves from this drag
-              if (tabsSnapshot.current) {
-                useBrowserStore.setState({ tabs: tabsSnapshot.current });
-                tabsSnapshot.current = null;
-              }
+              tabsSnapshot.current = null;
             }}
           >
             <motion.div
@@ -588,13 +589,14 @@ function RootDropZone({ isOver, children, listRef, savedScrollTop }: {
   savedScrollTop: React.MutableRefObject<number>;
 }) {
   const { setNodeRef } = useDroppable({ id: "root-zone" });
+  const attach = useCallback((node: HTMLDivElement | null) => {
+    setNodeRef(node);
+    listRef.current = node;
+    if (node) node.scrollTop = savedScrollTop.current;
+  }, [setNodeRef, listRef, savedScrollTop]);
   return (
     <div
-      ref={(node) => {
-        setNodeRef(node);
-        listRef.current = node;
-        if (node) node.scrollTop = savedScrollTop.current;
-      }}
+      ref={attach}
       onScroll={(e) => { savedScrollTop.current = e.currentTarget.scrollTop; }}
       style={{
         flex: 1, overflowY: "auto", overflowX: "hidden", padding: "8px 4px 4px",

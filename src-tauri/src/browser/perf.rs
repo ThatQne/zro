@@ -12,6 +12,21 @@ pub(crate) const PERF_INIT_SCRIPT: &str = r#"
   if (window.__zroPerf) return;
   window.__zroPerf = true;
 
+  // Capture the actual auxclick: NewWindowRequested arrives after button-up,
+  // when GetAsyncKeyState can no longer identify a middle click.
+  addEventListener('auxclick', function(e) {
+    if (!e.isTrusted || e.button !== 1) return;
+    var a = e.composedPath().find(function(n) { return n && n.matches && n.matches('a[href]'); });
+    if (!a || a.hasAttribute('download')) return;
+    try {
+      var u = new URL(a.href, location.href);
+      if (!/^https?:$/.test(u.protocol) || !window.chrome || !chrome.webview) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      chrome.webview.postMessage(JSON.stringify({ type: 'zro-background-link', url: u.href }));
+    } catch (_) {}
+  }, true);
+
   var done = new Set();
   var hoverTimer = null;
 
