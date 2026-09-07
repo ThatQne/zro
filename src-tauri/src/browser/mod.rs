@@ -68,6 +68,10 @@ pub struct PageMenuCtx {
 }
 
 pub struct BrowserState {
+    /// Session-only bounded page snapshots; never written to disk.
+    pub(crate) sleep_snapshots: HashMap<String, serde_json::Value>,
+    pub(crate) sleep_capturing: std::collections::HashSet<String>,
+    pub(crate) sleep_protected: std::collections::HashSet<String>,
     pub tabs: HashMap<String, TabInfo>,
     pub(crate) histories: HashMap<String, tabs::TabHistory>,
     pub active_tab_id: Option<String>,
@@ -111,6 +115,9 @@ pub struct BrowserState {
 impl Default for BrowserState {
     fn default() -> Self {
         Self {
+            sleep_snapshots: HashMap::new(),
+            sleep_capturing: Default::default(),
+            sleep_protected: Default::default(),
             tabs: HashMap::new(),
             histories: HashMap::new(),
             active_tab_id: None,

@@ -1405,6 +1405,17 @@ fn spawn_webview(
             let Some(tab_id) = crate::browser::tab_of_label(app, &label_pl) else { return };
             match payload.event() {
                 PageLoadEvent::Finished => {
+                    let snapshot = {
+                        let state = app.state::<Mutex<BrowserState>>();
+                        let mut s = state.lock().unwrap();
+                        s.sleep_snapshots.remove(&tab_id)
+                    };
+                    if let Some(snapshot) = snapshot {
+                        if snapshot["url"].as_str() == Some(eurl.as_str()) {
+                            let script = format!("{}({});", include_str!("sleep_restore.js"), snapshot);
+                            let _ = wv.eval(script);
+                        }
+                    }
                     let ms = {
                         let state = app.state::<Mutex<BrowserState>>();
                         let mut s = state.lock().unwrap();
@@ -1417,6 +1428,7 @@ fn spawn_webview(
                     let is_active = {
                         let state = app.state::<Mutex<BrowserState>>();
                         let mut s = state.lock().unwrap();
+                        s.sleep_protected.remove(&tab_id);
                         s.nav_started.insert(tab_id.clone(), std::time::Instant::now());
                         s.active_tab_id.as_deref() == Some(tab_id.as_str())
                     };
@@ -1662,7 +1674,7 @@ pub async fn create_browser_tab(
     // ── Warm-spare adoption: instant new tab ─────────────────────────────
     // Default profile + foreground only (spares live in the default data
     // directory; background pre-wakes aren't latency-sensitive).
-    if data_dir.is_none() && !background {
+    if data_dir.is_none() && !background && !state.lock().unwrap().sleep_snapshots.contains_key(&id) {
         let adopt = {
             let mut s = state.lock().unwrap();
             s.spare.take().map(|l| (l, s.spare_url.take()))
@@ -1766,11 +1778,46 @@ pub async fn hibernate_tab(
     state: tauri::State<'_, Mutex<BrowserState>>,
     id: String,
 ) -> Result<(), String> {
+    {
+        let mut s = state.lock().unwrap();
+        if s.active_tab_id.as_deref() == Some(&id) || s.sleep_protected.contains(&id) || !s.sleep_capturing.insert(id.clone()) {
+            return Err("tab is active or already saving state".into());
+        }
+    }
+    // ExecuteScript requires a running renderer. Resume without showing it
+    // or changing global active-page visibility.
+    if let Some(wv) = crate::browser::tab_webview(&app, &id) {
+        #[cfg(windows)]
+        let _ = wv.with_webview(|pwv| unsafe {
+            use windows_core::Interface;
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
+            if let Ok(core) = pwv.controller().CoreWebView2().and_then(|c| c.cast::<ICoreWebView2_3>()) {
+                let _ = core.Resume();
+            }
+        });
+    }
+    let capture = tokio::time::timeout(std::time::Duration::from_secs(2),
+        crate::agent::eval::eval_in(&app, Some(&id), include_str!("sleep_capture.js").into())).await;
+    let snapshot = capture.ok().and_then(Result::ok)
+        .filter(|raw| raw.len() <= 65536)
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|s| s["url"].is_string() && s["forms"].is_array() && s["scrollers"].is_array());
     let label = {
         let mut s = state.lock().unwrap();
+        s.sleep_capturing.remove(&id);
         if s.active_tab_id.as_deref() == Some(&id) {
             return Err("won't hibernate the active tab".into());
         }
+        if !s.tabs.contains_key(&id) { return Err("tab closed".into()); }
+        let Some(snapshot) = snapshot else {
+            s.sleep_protected.insert(id.clone());
+            drop(s);
+            if let Some(wv) = crate::browser::tab_webview(&app, &id) {
+                suspend_webview(&app, &crate::browser::tab_label(&app, &id), &wv);
+            }
+            return Err("page state requires light sleep".into());
+        };
+        s.sleep_snapshots.insert(id.clone(), snapshot);
         let label = s.labels.remove(&id).unwrap_or_else(|| id.clone());
         s.label_owner.remove(&label);
         s.suspended.remove(&label);
@@ -1852,6 +1899,8 @@ pub async fn close_browser_tab(
     let next_id = {
         let mut s = state.lock().unwrap();
         s.tabs.remove(&id);
+        s.sleep_snapshots.remove(&id);
+        s.sleep_protected.remove(&id);
         s.histories.remove(&id);
         if s.active_tab_id.as_deref() == Some(&id) {
             s.active_tab_id = s.tabs.keys().next().cloned();

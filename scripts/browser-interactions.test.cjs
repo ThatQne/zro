@@ -6,6 +6,61 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const root = resolve(__dirname, '..');
 
+function captureSleep({ controls = [], rich = false, elements = [], url = 'https://example.com/article' } = {}) {
+  return vm.runInNewContext(readFileSync(resolve(root, 'src-tauri/src/browser/sleep_capture.js'), 'utf8'), {
+    location: { href: url }, scrollX: 0, scrollY: 720, CSS: { escape: s => s },
+    document: {
+      querySelector: () => rich ? {} : null,
+      querySelectorAll: selector => selector === '*' ? elements : controls,
+    },
+  });
+}
+
+test('deep sleep captures scroll and edited ordinary fields; protects sensitive and rich pages on any host', () => {
+  const field = { id: 'message', tagName: 'TEXTAREA', type: 'textarea', name: 'message', value: 'unsent draft', defaultValue: '', autocomplete: '' };
+  const saved = captureSleep({ controls: [field], elements: [{ id: 'pane', scrollLeft: 10, scrollTop: 55 }] });
+  assert.equal(saved.y, 720);
+  assert.equal(saved.forms[0].value, 'unsent draft');
+  assert.equal(saved.scrollers[0].y, 55);
+  for (const type of ['password', 'file', 'hidden']) {
+    assert.equal(captureSleep({ controls: [{ ...field, type }] }).protected, true);
+  }
+  assert.equal(captureSleep({ controls: [{ ...field, autocomplete: 'cc-number' }] }).protected, true);
+  assert.equal(captureSleep({ rich: true, url: 'https://any-editor.example/document' }).protected, true);
+  assert.equal(captureSleep({ controls: [{ ...field, value: 'x'.repeat(40000) }] }).protected, true);
+});
+
+test('sleep restoration retries delayed content, stops on user input, and rejects a different URL', () => {
+  const script = readFileSync(resolve(root, 'src-tauri/src/browser/sleep_restore.js'), 'utf8');
+  const listeners = new Map();
+  const scrolls = [];
+  let tick, field;
+  class Input { set value(v) { this.saved = v; } dispatchEvent() {} }
+  const context = { location: { href: 'https://example.com/article' },
+    document: { querySelector: () => field }, HTMLInputElement: Input, HTMLTextAreaElement: Input,
+    Event: class {}, setInterval: fn => { tick = fn; return 1; }, clearInterval() {}, setTimeout() {},
+    addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener() {},
+    scrollTo: (x, y) => scrolls.push([x, y]),
+  };
+  const restore = vm.runInNewContext(script, context);
+  const snapshot = { url: context.location.href, x: 0, y: 720, scrollers: [], forms: [
+    { path: '#draft', tag: 'INPUT', type: 'text', name: 'draft', value: 'saved draft' },
+  ] };
+  restore(snapshot);
+  field = Object.assign(new Input(), { tagName: 'INPUT', type: 'text', name: 'draft' });
+  tick();
+  assert.equal(field.saved, 'saved draft');
+  listeners.get('pointerdown')();
+  field.value = 'new typing';
+  const count = scrolls.length;
+  tick();
+  assert.equal(field.saved, 'new typing');
+  assert.equal(scrolls.length, count);
+  context.location.href = 'https://other.example/';
+  restore(snapshot);
+  assert.equal(scrolls.length, count);
+});
+
 test('middle-click dispatches a background link and cancels native foreground navigation', () => {
   const source = readFileSync(resolve(root, 'src-tauri/src/browser/perf.rs'), 'utf8');
   const script = source.split('r#"')[1].split('"#;')[0];
