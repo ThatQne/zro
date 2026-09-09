@@ -8,8 +8,8 @@ use crate::browser::cookies::cookies_for;
 use crate::browser::navigate_wv;
 
 use super::eval::{
-    click_js, eval_in, fill_js, find_js, find_text_js, js_str, read_page_js,
-    run_js_js, scroll_js, select_option_js, GET_LINKS_JS,
+    click_js, eval_in, fill_js, find_js, find_text_js, js_str, read_page_js, run_js_js, scroll_js,
+    select_option_js, GET_LINKS_JS,
 };
 use super::facts::{recall_facts, remember_fact};
 use super::search::{read_urls, web_search};
@@ -156,19 +156,23 @@ fn list_tabs_json(app: &AppHandle) -> String {
     let tabs: Vec<serde_json::Value> = s
         .tabs
         .values()
-        .map(|t| serde_json::json!({
-            "id": t.id, "title": t.title, "url": t.url,
-            "active": active.as_deref() == Some(t.id.as_str()),
-        }))
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id, "title": t.title, "url": t.url,
+                "active": active.as_deref() == Some(t.id.as_str()),
+            })
+        })
         .collect();
     serde_json::Value::Array(tabs).to_string()
 }
 
-
 /// Tools with no page/tab side effects — safe to run concurrently when the
 /// model emits several calls in one turn.
 pub(crate) fn is_parallel_safe(name: &str) -> bool {
-    matches!(name, "web_search" | "read_url" | "list_tabs" | "recall" | "search_history")
+    matches!(
+        name,
+        "web_search" | "read_url" | "list_tabs" | "recall" | "search_history"
+    )
 }
 
 pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Value) -> String {
@@ -180,7 +184,11 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
             // when they don't, and some emit both. Accept all three.
             let mut queries: Vec<String> = args["queries"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             if let Some(one) = args["query"].as_str() {
                 if !one.trim().is_empty() {
@@ -192,7 +200,11 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
         "read_url" => {
             let urls: Vec<String> = args["urls"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             if urls.is_empty() {
                 Err("urls array is empty".into())
@@ -229,7 +241,8 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
             // Reef-inspired in-page index, injected into every tab
             let js = format!(
                 "JSON.stringify((window.__zroFind && window.__zroFind.query({}, {})) || [])",
-                js_str(q), limit
+                js_str(q),
+                limit
             );
             eval_in(app, tab, js).await
         }
@@ -291,7 +304,10 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
         "remember" => Ok(remember_fact(app, args["fact"].as_str().unwrap_or(""))),
         "recall" => Ok(recall_facts(app, args["query"].as_str().unwrap_or(""))),
         "get_cookies" => {
-            let url = args["url"].as_str().filter(|s| !s.is_empty()).map(String::from);
+            let url = args["url"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(String::from);
             cookies_for(app, url)
                 .await
                 .and_then(|c| serde_json::to_string(&c).map_err(|e| e.to_string()))

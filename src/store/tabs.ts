@@ -4,6 +4,10 @@ import { tauriStorage } from "./tauriStorage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
+import { createResourceScheduler, planResources } from "./resourceScheduler";
+import { MemoryPressure, memoryPressure, recordReuse, smoothLoadCost } from "./resourceAlgorithms";
+const LEGACY_NEW_TAB_URL = "about:blank#zro-newtab";
+export const NEW_TAB_URL = "zro://newtab";
 
 export interface Tab {
   id: string;
@@ -24,10 +28,17 @@ export interface Tab {
   muted?: boolean;
   /** Profile this tab's webview lives in (undefined = "default") */
   profileId?: string;
-  /** Renderer destroyed to free RAM; wakes lazily on hover/click */
+  /** Queued background URL; no renderer exists until admitted or clicked. */
+  pendingLoad?: boolean;
+  /** Native snapshot could not safely preserve this document. */
+  sleepProtected?: boolean;
+  reuseScore?: number;
+  reuseUpdatedAt?: number;
+  loadCostMs?: number;
+  /** Renderer destroyed to free RAM; wakes lazily on click */
   hibernated?: boolean;
-  /** Renderer frozen (WebView2 TrySuspend) — state kept, RAM released.
-   *  Cheaper tier than hibernation; thaws automatically on switch. */
+  /** Renderer frozen (WebView2 TrySuspend): state retained, scripts paused.
+   *  Memory may be reclaimed, but this does not eliminate its footprint. */
   suspended?: boolean;
   /** Last time this tab was active — drives the freeze/hibernation sweeps */
   lastActiveAt?: number;
@@ -85,10 +96,13 @@ export interface Settings {
   activeProfileId: string;
   /** Destroy renderers of background tabs idle this long (minutes, 0 = off) */
   hibernateAfterMin: number;
-  /** Hard cap on live background renderers — the total-memory bound. Only
-   *  the N most-recently-used background tabs keep a process; everything
-   *  past the cap sleeps immediately regardless of idle time (0 = no cap). */
+  /** Target for eligible awake background tabs, not a hard RAM/process cap. */
   liveTabLimit: number;
+  /** Concurrent background page loads; 0 keeps new links unloaded until clicked. */
+  backgroundLoadLimit: number;
+  /** User-authored browser UI CSS, never injected into websites. */
+  customChromeCss: string;
+  customChromeCssEnabled: boolean;
   /** Whole machine idle this long → freeze EVERY renderer, active tab
    *  included (audio exempt). The all-night-fans fix (minutes, 0 = off). */
   idleFreezeMin: number;
@@ -125,6 +139,9 @@ const DEFAULT_SETTINGS: Settings = {
   activeProfileId: "default",
   hibernateAfterMin: 10,
   liveTabLimit: 3,
+  backgroundLoadLimit: 2,
+  customChromeCss: "",
+  customChromeCssEnabled: false,
   idleFreezeMin: 3,
   shieldsEnabled: true,
   shieldsAds: true,
@@ -219,6 +236,11 @@ function logErr(ctx: string, err: unknown) {
 // webview a newer call had just activated. Intermediate requests are safely
 // coalesced because the frontend has already selected the latest tab.
 let nativeSwitchQueue: Promise<void> = Promise.resolve();
+function queueNative(run: () => Promise<void>): Promise<void> {
+  const next = nativeSwitchQueue.then(run, run);
+  nativeSwitchQueue = next.catch(() => {});
+  return next;
+}
 
 /** Profiles are separate browsers — tabs AND folders are visible only inside
  *  their own profile's space. */
@@ -234,6 +256,7 @@ export function activeFolderId(tabs: Tab[], activeTabId: string | null): string 
 }
 
 interface BrowserStore {
+  memoryPressure: MemoryPressure;
   tabs: Tab[];
   folders: Folder[];
   activeTabId: string | null;
@@ -314,6 +337,8 @@ interface BrowserStore {
 export function normalizeUrl(raw: string, engine: Settings["searchEngine"] = "google"): string {
   const t = raw.trim();
   if (!t) return "about:blank";
+  if (t === LEGACY_NEW_TAB_URL) return NEW_TAB_URL;
+  if (t === NEW_TAB_URL || t === "about:blank") return t;
   if (/^https?:\/\//i.test(t)) return t;
   // Any other hierarchical URI scheme (chrome-extension://, file://, ...)
   // passes through untouched — otherwise it falls into the search-query
@@ -354,6 +379,7 @@ function refreshMeta(id: string) {
 export const useBrowserStore = create<BrowserStore>()(
   persist(
     (set, get) => ({
+      memoryPressure: "normal",
       tabs: [],
       folders: [],
       activeTabId: null,
@@ -371,7 +397,7 @@ export const useBrowserStore = create<BrowserStore>()(
         // Blank new tab (Ctrl+T / + button) → focus the URL bar so the user
         // can type immediately. Link/popup opens keep focus on the page.
         const focusUrl = opts?.focusUrl ?? url === undefined;
-        const target = url ?? "https://www.google.com";
+        const target = url ?? NEW_TAB_URL;
         const id = `tab-${uuidv4()}`;
         const normalized = normalizeUrl(target, get().settings.searchEngine);
         const profileId = get().settings.activeProfileId;
@@ -382,7 +408,8 @@ export const useBrowserStore = create<BrowserStore>()(
             ...s.tabs.map((t) => (!background && t.id === s.activeTabId ? { ...t, lastActiveAt: Date.now() } : t)),
             {
               id, url: normalized, title: "New Tab", favicon: faviconFor(normalized),
-              folderId, isLoading: true, incognito: s.isIncognito || undefined,
+              folderId, isLoading: false, incognito: s.isIncognito || undefined,
+              pendingLoad: background, hibernated: true,
               profileId: profileId !== "default" ? profileId : undefined,
               lastActiveAt: Date.now(),
             },
@@ -390,16 +417,9 @@ export const useBrowserStore = create<BrowserStore>()(
           activeTabId: background ? s.activeTabId : id,
           selectedTabIds: background ? s.selectedTabIds : [],
         }));
-        try {
-          await invoke("create_browser_tab", {
-            id, url: normalized,
-            profile: profileId !== "default" ? profileId : null,
-            background,
-          });
-        } catch (err) {
-          logErr("create_browser_tab", err);
-        }
-        if (focusUrl) {
+        if (background) return; // scheduler admits it; clicking bypasses the queue
+        await get().switchTab(id);
+        if (focusUrl && get().activeTabId === id) {
           invoke("focus_main").catch(() => {});
           setTimeout(() => window.dispatchEvent(new CustomEvent("zro-focus-url")), 80);
         }
@@ -487,7 +507,8 @@ export const useBrowserStore = create<BrowserStore>()(
             // Stamp both sides: the incoming tab (wakes + thaws) and the
             // outgoing one (its idle clock starts NOW, going to background)
             t.id === id
-              ? { ...t, lastActiveAt: Date.now(), hibernated: false, suspended: false }
+              ? { ...t, lastActiveAt: Date.now(), pendingLoad: false,
+                  ...(s.activeTabId !== id || !t.reuseScore ? recordReuse(t, Date.now()) : {}) }
               : t.id === s.activeTabId
               ? { ...t, lastActiveAt: Date.now() }
               : t
@@ -498,21 +519,25 @@ export const useBrowserStore = create<BrowserStore>()(
           if (get().activeTabId !== id) return;
           try {
             const exists = await invoke<boolean>("switch_browser_tab", { id });
+            if (exists && get().activeTabId === id) {
+              get().updateTab(id, { hibernated: false, suspended: false });
+            }
             if (!exists && get().activeTabId === id) {
               // Restored / hibernated — webview is created lazily on activation
-              set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, isLoading: true } : t)) }));
+              set((s) => ({ tabs: s.tabs.map((t) => (t.id === id
+                ? { ...t, isLoading: true, hibernated: false, suspended: false } : t)) }));
               await invoke("create_browser_tab", {
                 id, url: tab.url,
                 profile: tab.profileId && tab.profileId !== "default" ? tab.profileId : null,
               });
+              if (!get().tabs.some(t => t.id === id)) await invoke("close_browser_tab", { id });
             }
           } catch (err) {
+            get().updateTab(id, { isLoading: false });
             logErr("switch_browser_tab", err);
           }
         };
-        const queued = nativeSwitchQueue.then(run, run);
-        nativeSwitchQueue = queued.catch(() => {});
-        await queued;
+        await queueNative(run);
       },
 
       cycleTab: async (dir) => {
@@ -744,6 +769,7 @@ export const useBrowserStore = create<BrowserStore>()(
         }));
       },
       addHistory: (entry) => {
+        if (!/^https?:\/\//i.test(entry.url)) return;
         set((s) => {
           // Dedupe: refreshes / redirect hops / SPA re-fires of the same URL
           // within 5 minutes update the existing entry instead of stacking
@@ -775,10 +801,13 @@ export const useBrowserStore = create<BrowserStore>()(
 
       initEvents: async () => {
         // Per-tab webviews: events carry the exact tab id
-        const unsubLoaded = await listen<{ id: string; url: string }>("page-loaded", (e) => {
+        const unsubLoaded = await listen<{ id: string; url: string; loadMs?: number }>("page-loaded", (e) => {
           const { updateTab } = get();
           const { id, url } = e.payload;
-          updateTab(id, { isLoading: false, url, favicon: faviconFor(url) });
+          const loaded = get().tabs.find(t => t.id === id);
+          if (!loaded) return;
+          updateTab(id, { isLoading: false, url, favicon: faviconFor(url), loadCostMs: smoothLoadCost(loaded.loadCostMs, e.payload.loadMs) });
+          if (url === NEW_TAB_URL) { updateTab(id, { title: "New Tab" }); return; }
           invoke("push_to_history", { id, url }).catch(() => {});
 
           // Real title + real favicon straight from the page (any tab)
@@ -790,15 +819,24 @@ export const useBrowserStore = create<BrowserStore>()(
           const loadedTab = get().tabs.find((t) => t.id === id);
           if (get().activeTabId === id && !loadedTab?.incognito) {
             setTimeout(() => {
-              if (get().activeTabId === id) {
-                invoke("index_page", { url }).catch(() => {});
+              const s = get();
+              const current = s.tabs.find(t => t.id === id);
+              if (!document.hidden && s.memoryPressure === "normal" && s.activeTabId === id &&
+                  current?.url === url && !current.incognito && !s.tabs.some(t => t.isLoading)) {
+                invoke("index_page", { url, id }).catch(() => {});
               }
             }, 2500);
           }
         });
 
         const unsubLoading = await listen<{ id: string }>("page-loading", (e) => {
-          get().updateTab(e.payload.id, { isLoading: true });
+          get().updateTab(e.payload.id, { isLoading: true, sleepProtected: false });
+        });
+        const unsubNewTabError = await listen<{ id: string }>("new-tab-error", (e) => {
+          const tab = get().tabs.find(t => t.id === e.payload.id);
+          if (tab?.url === NEW_TAB_URL) {
+            get().updateTab(tab.id, { isLoading: false, title: "New Tab — reload to retry" });
+          }
         });
 
         // Audio state (speaker button / muted indicator)
@@ -839,6 +877,7 @@ export const useBrowserStore = create<BrowserStore>()(
         return () => {
           unsubLoaded();
           unsubLoading();
+          unsubNewTabError();
           unsubAudio();
           unsubNav();
           unsubTitle();
@@ -856,7 +895,8 @@ export const useBrowserStore = create<BrowserStore>()(
         // first activation. Incognito tabs die with the session.
         tabs: s.tabs.filter((t) => !t.incognito).map((t) => ({
           ...t, isLoading: false, audible: false, muted: false, hadMedia: false,
-          hibernated: false, suspended: false, lastActiveAt: undefined,
+          hibernated: false, suspended: false, pendingLoad: false, sleepProtected: false, lastActiveAt: undefined,
+          reuseScore: undefined, reuseUpdatedAt: undefined, loadCostMs: undefined,
         })),
         activeTabId: s.activeTabId,
         history: s.history,
@@ -871,7 +911,15 @@ export const useBrowserStore = create<BrowserStore>()(
           ...p,
           // Restored tabs have no webview yet — they ARE hibernated until
           // first activation (drives the sleeping look + hover pre-wake)
-          tabs: (p.tabs ?? []).map((t) => ({ ...t, hibernated: true })),
+          tabs: (p.tabs ?? []).map((t) => ({
+            ...t,
+            url: t.url === LEGACY_NEW_TAB_URL ? NEW_TAB_URL : t.url,
+            hibernated: true,
+          })),
+          closedTabs: (p.closedTabs ?? []).map((t) => ({
+            ...t,
+            url: t.url === LEGACY_NEW_TAB_URL ? NEW_TAB_URL : t.url,
+          })),
           // Older sessions stored emoji icons — normalize onto the SVG set
           folders: (p.folders ?? []).map((f) => ({ ...f, icon: normalizeFolderIcon(f.icon) })),
           settings: {
@@ -888,96 +936,86 @@ export const useBrowserStore = create<BrowserStore>()(
   )
 );
 
-// ── Tab power tiers ──────────────────────────────────────────────────────────
-// FREEZE (TrySuspend) is the workhorse: DOM, scroll, forms, video position and
-// play/pause state all survive, resume is instant, and the renderer's RAM
-// becomes reclaimable. DESTROY (hibernate) frees everything but the wake is a
-// full cold page load — so it's reserved for genuinely idle tabs only.
-//
-// The original cap sweep hibernated any beyond-cap tab REGARDLESS of recency —
-// a tab used 20s ago got its renderer destroyed, every switch back was a cold
-// reload, every reload burned the warm spare and spawned a replacement. That
-// churn was the "everything is slow" report. Rules now:
-//   · beyond-cap + recently used  → freeze (instant to come back)
-//   · beyond-cap + idle ≥ 5 min   → destroy (gently, 1 per tick)
-//   · idle ≥ hibernateAfterMin    → destroy (the user's own timer)
-// All sweeps skip while the window is hidden — the native minimize-freeze and
-// idle watchdog own that case, and letting intervals queue up while hidden
-// meant a burst of native calls (and a frozen sidebar) on refocus.
-
-const CAP_DESTROY_IDLE_MS = 5 * 60_000;
-
-// Tier 0 (10s): enforce the live-renderer cap, freeze-first.
-setInterval(() => {
-  if (document.hidden) return;
-  const s = useBrowserStore.getState();
-  const cap = s.settings.liveTabLimit;
-  if (cap <= 0) return;
-  const live = s.tabs
-    .filter(
-      (t) =>
-        t.id !== s.activeTabId && !t.hibernated && !t.audible && !t.isLoading &&
-        !t.keepAwake && t.lastActiveAt !== undefined
-    )
-    .sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
-  let destroys = 0;
-  let freezes = 0;
-  for (const t of live.slice(cap)) {
-    const idle = Date.now() - (t.lastActiveAt ?? 0);
-    // Media tabs (played audio/video this session) freeze but never get
-    // destroyed — TrySuspend keeps the video position and paused state,
-    // a renderer teardown loses both.
-    if (!t.hadMedia && idle >= CAP_DESTROY_IDLE_MS && destroys < 1) {
-      destroys++;
-      invoke("hibernate_tab", { id: t.id })
-        .then(() => s.updateTab(t.id, { hibernated: true, suspended: false }))
-        .catch(() => {});
-    } else if (!t.suspended && freezes < 2) {
-      freezes++;
-      invoke("suspend_tab", { id: t.id })
-        .then(() => s.updateTab(t.id, { suspended: true }))
-        .catch(() => {});
+// One event-driven owner for automatic background loading and tab sleep.
+// Foreground switches share the native queue to prevent teardown/activation
+// races. The native minimize watchdog still handles the hidden-window case.
+const resourceScheduler = createResourceScheduler({
+  state: useBrowserStore.getState,
+  visible: () => !document.hidden,
+  now: Date.now,
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: timer => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  sampleResources: async () => {
+    const sample = await invoke<{ total_mb: number; available_mb: number }>("get_resource_sample");
+    if (!sample) return;
+    const previous = useBrowserStore.getState().memoryPressure;
+    const next = memoryPressure(previous, sample.total_mb, sample.available_mb);
+    if (next !== previous) useBrowserStore.setState({ memoryPressure: next });
+  },
+  run: action => queueNative(async () => {
+    const s = useBrowserStore.getState();
+    const tab = s.tabs.find(t => t.id === action.id);
+    if (!tab || tab.id === s.activeTabId || document.hidden) return;
+    const current = planResources(s, Date.now(), new Map(s.tabs
+      .filter(t => t.id !== action.id).map(t => [t.id, Infinity]))).action;
+    if (current?.id !== action.id || current.kind !== action.kind) return;
+    if (action.kind === "load") {
+      s.updateTab(tab.id, { pendingLoad: false, hibernated: false, isLoading: true });
+      try {
+        await invoke("create_browser_tab", { id: tab.id, url: tab.url,
+          profile: tab.profileId ?? null, background: true });
+        if (!useBrowserStore.getState().tabs.some(t => t.id === tab.id)) {
+          await invoke("close_browser_tab", { id: tab.id });
+        }
+      } catch (err) {
+        s.updateTab(tab.id, { hibernated: true, isLoading: false });
+        logErr("background load", err);
+        throw err;
+      }
+      return;
     }
-  }
-}, 10_000);
-
-// Tier 1 (30s): background tabs idle over a minute get frozen.
-setInterval(() => {
-  if (document.hidden) return;
+    const stillBackground = () => {
+      const latest = useBrowserStore.getState();
+      const t = latest.tabs.find(t => t.id === tab.id);
+      return t && latest.activeTabId !== tab.id && t.lastActiveAt === tab.lastActiveAt &&
+        t.url === tab.url && !t.isLoading;
+    };
+    try {
+      await invoke(action.kind === "freeze" ? "suspend_tab" : "hibernate_tab", { id: tab.id });
+      if (stillBackground()) s.updateTab(tab.id, action.kind === "freeze"
+        ? { suspended: true } : { hibernated: true, suspended: false });
+    } catch (err) {
+      if (stillBackground() && String(err).includes("page state requires light sleep")) {
+        s.updateTab(tab.id, { sleepProtected: true });
+      }
+      throw err;
+    }
+  }),
+});
+const unsubscribeResources = useBrowserStore.subscribe(resourceScheduler.notify);
+let lastBudget: string | undefined;
+let budgetQueue = Promise.resolve();
+function syncBackgroundBudget() {
   const s = useBrowserStore.getState();
-  const cutoff = Date.now() - 60_000;
-  for (const t of s.tabs) {
-    if (t.id === s.activeTabId || t.hibernated || t.suspended || t.audible || t.isLoading || t.keepAwake) continue;
-    if (t.lastActiveAt === undefined || t.lastActiveAt > cutoff) continue;
-    invoke("suspend_tab", { id: t.id })
-      .then(() => s.updateTab(t.id, { suspended: true }))
-      .catch(() => {});
-  }
-}, 30_000);
-
-// Tier 2 (60s): idle past the user's timer → renderer destroyed. Rate-limited
-// so a pile of newly-eligible tabs never lands as one main-thread burst.
-setInterval(() => {
-  if (document.hidden) return;
-  const s = useBrowserStore.getState();
-  const afterMin = s.settings.hibernateAfterMin;
-  if (afterMin <= 0) return;
-  const cutoff = Date.now() - afterMin * 60_000;
-  let destroys = 0;
-  for (const t of s.tabs) {
-    if (destroys >= 2) break;
-    if (t.id === s.activeTabId || t.hibernated || t.audible || t.isLoading || t.keepAwake) continue;
-    // Media tabs cap out at freeze — hibernation would lose video position
-    if (t.hadMedia) continue;
-    // Tabs never activated this session have no timestamp — leave them;
-    // they either already lack a webview or were just created.
-    if (t.lastActiveAt === undefined || t.lastActiveAt > cutoff) continue;
-    destroys++;
-    invoke("hibernate_tab", { id: t.id })
-      .then(() => s.updateTab(t.id, { hibernated: true, suspended: false }))
-      .catch(() => {});
-  }
-}, 60_000);
+  const allowed = !document.hidden && s.memoryPressure === "normal" && !s.tabs.some(t => t.isLoading);
+  const release = document.hidden || s.memoryPressure !== "normal";
+  const key = `${allowed}/${release}`;
+  if (lastBudget === key) return;
+  lastBudget = key;
+  budgetQueue = budgetQueue.then(() => invoke<void>("set_background_budget", { allowed, release })).catch(() => { lastBudget = undefined; });
+}
+const unsubscribeBudget = useBrowserStore.subscribe(syncBackgroundBudget);
+document.addEventListener("visibilitychange", syncBackgroundBudget);
+syncBackgroundBudget();
+document.addEventListener("visibilitychange", resourceScheduler.notify);
+resourceScheduler.notify();
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  unsubscribeResources();
+  unsubscribeBudget();
+  document.removeEventListener("visibilitychange", syncBackgroundBudget);
+  document.removeEventListener("visibilitychange", resourceScheduler.notify);
+  resourceScheduler.dispose();
+});
 
 // ── Keep the Rust idle watchdog's threshold in sync with the setting ──────────
 function pushIdleFreeze() {

@@ -45,7 +45,10 @@ pub(crate) fn finish_by_path(app: &AppHandle, path: &str, success: bool, reason:
             })
     };
     if let Some(info) = info {
-        let _ = app.emit("download-event", serde_json::json!({ "kind": "finished", "item": info }));
+        let _ = app.emit(
+            "download-event",
+            serde_json::json!({ "kind": "finished", "item": info }),
+        );
     }
 }
 
@@ -71,8 +74,14 @@ fn unique_download_path(dir: &std::path::Path, filename: &str) -> std::path::Pat
         return target;
     }
     let p = std::path::Path::new(filename);
-    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "download".into());
-    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".into());
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     for n in 2..1000 {
         target = dir.join(format!("{stem} ({n}){ext}"));
         if !target.exists() {
@@ -85,15 +94,17 @@ fn unique_download_path(dir: &std::path::Path, filename: &str) -> std::path::Pat
 /// Chrome-store CRX endpoints refuse non-Chrome user agents server-side —
 /// the native WebView2 download always dies as "interrupted".
 fn is_crx_url(url: &str) -> bool {
-    url.contains("/service/update2/crx")
-        || url.split('?').next().unwrap_or("").ends_with(".crx")
+    url.contains("/service/update2/crx") || url.split('?').next().unwrap_or("").ends_with(".crx")
 }
 
 pub(crate) const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 /// Web Store extension id (32 chars a–p) when the CRX URL carries one.
 pub(crate) fn crx_ext_id(url: &str) -> Option<String> {
-    let dec = url.replace("%3D", "=").replace("%3d", "=").replace("%26", "&");
+    let dec = url
+        .replace("%3D", "=")
+        .replace("%3d", "=")
+        .replace("%26", "&");
     let mut rest = dec.as_str();
     while let Some(i) = rest.find("id=") {
         let id: String = rest[i + 3..]
@@ -149,7 +160,10 @@ async fn fetch_crx(app: AppHandle, id: u64, url: String, path: std::path::PathBu
         // Google answers an unknown/unpublished extension id with a 200 OK
         // HTML error page, not an HTTP error — only real CRX bytes count.
         if ext_id.is_some() && !bytes.starts_with(b"Cr24") {
-            eprintln!("[dl] crx fetch {} -> not a CRX (unknown extension id?)", fetch_url);
+            eprintln!(
+                "[dl] crx fetch {} -> not a CRX (unknown extension id?)",
+                fetch_url
+            );
             reason = Some("not available on the Chrome Web Store".into());
             return None;
         }
@@ -182,7 +196,10 @@ async fn fetch_crx(app: AppHandle, id: u64, url: String, path: std::path::PathBu
         })
     };
     if let Some(info) = info {
-        let _ = app.emit("download-event", serde_json::json!({ "kind": "finished", "item": info }));
+        let _ = app.emit(
+            "download-event",
+            serde_json::json!({ "kind": "finished", "item": info }),
+        );
     }
 }
 
@@ -213,10 +230,9 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                 let dls = app.state::<Downloads>();
                 let items = dls.items.lock().unwrap();
                 let now = epoch_ms();
-                if items
-                    .iter()
-                    .any(|i| i.state == "active" && i.url == url_s && now.saturating_sub(i.started_at) < 1500)
-                {
+                if items.iter().any(|i| {
+                    i.state == "active" && i.url == url_s && now.saturating_sub(i.started_at) < 1500
+                }) {
                     eprintln!("[dl] duplicate Requested within 1.5s, ignoring: {url_s}");
                     return false;
                 }
@@ -226,7 +242,10 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                 *destination = unique_download_path(&dir, &filename);
             }
             let dls = app.state::<Downloads>();
-            let id = dls.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let id = dls
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
             let info = DownloadInfo {
                 id,
                 url: url_s.clone(),
@@ -240,7 +259,10 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                 reason: None,
             };
             dls.items.lock().unwrap().insert(0, info.clone());
-            let _ = app.emit("download-event", serde_json::json!({ "kind": "started", "item": info }));
+            let _ = app.emit(
+                "download-event",
+                serde_json::json!({ "kind": "started", "item": info }),
+            );
 
             if crx {
                 // Cancel the doomed native download; fetch it ourselves.
@@ -283,7 +305,10 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                 })
             };
             if let Some(info) = info {
-                let _ = app.emit("download-event", serde_json::json!({ "kind": "finished", "item": info }));
+                let _ = app.emit(
+                    "download-event",
+                    serde_json::json!({ "kind": "finished", "item": info }),
+                );
             }
             true
         }
@@ -305,7 +330,10 @@ pub async fn download_crx(app: AppHandle, ext_id: String) -> Result<(), String> 
     let path = unique_download_path(&dir, &format!("{ext_id}.crx"));
 
     let dls = app.state::<Downloads>();
-    let id = dls.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let id = dls
+        .counter
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
     let info = DownloadInfo {
         id,
         url: url.clone(),
@@ -319,7 +347,10 @@ pub async fn download_crx(app: AppHandle, ext_id: String) -> Result<(), String> 
         reason: None,
     };
     dls.items.lock().unwrap().insert(0, info.clone());
-    let _ = app.emit("download-event", serde_json::json!({ "kind": "started", "item": info }));
+    let _ = app.emit(
+        "download-event",
+        serde_json::json!({ "kind": "started", "item": info }),
+    );
 
     fetch_crx(app.clone(), id, url, path).await;
     Ok(())
@@ -330,7 +361,10 @@ pub async fn download_crx(app: AppHandle, ext_id: String) -> Result<(), String> 
 /// than going through WebView2's download pipeline.
 pub fn record_completed(app: &AppHandle, url: String, path: &std::path::Path) {
     let dls = app.state::<Downloads>();
-    let id = dls.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let id = dls
+        .counter
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
     let info = DownloadInfo {
         id,
         url,
@@ -344,7 +378,10 @@ pub fn record_completed(app: &AppHandle, url: String, path: &std::path::Path) {
         reason: None,
     };
     dls.items.lock().unwrap().insert(0, info.clone());
-    let _ = app.emit("download-event", serde_json::json!({ "kind": "started", "item": info }));
+    let _ = app.emit(
+        "download-event",
+        serde_json::json!({ "kind": "started", "item": info }),
+    );
 }
 
 #[tauri::command]
@@ -383,7 +420,9 @@ pub(crate) fn forget_op(id: u64) {
 }
 
 #[cfg(windows)]
-fn with_op<F: FnOnce(&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation)>(
+fn with_op<
+    F: FnOnce(&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation),
+>(
     id: u64,
     f: F,
 ) -> bool {
@@ -470,7 +509,11 @@ pub async fn clear_downloads(app: AppHandle, all: Option<bool>) -> Result<(), St
         let active: Vec<u64> = {
             let dls = app.state::<Downloads>();
             let items = dls.items.lock().unwrap();
-            items.iter().filter(|i| i.state == "active").map(|i| i.id).collect()
+            items
+                .iter()
+                .filter(|i| i.state == "active")
+                .map(|i| i.id)
+                .collect()
         };
         for id in active {
             let _ = control_download(app.clone(), id, "cancel".into()).await;
@@ -565,8 +608,12 @@ pub async fn reveal_download(path: String) -> Result<(), String> {
 
 #[cfg(not(windows))]
 #[tauri::command]
-pub async fn open_download(_path: String) -> Result<(), String> { Ok(()) }
+pub async fn open_download(_path: String) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(windows))]
 #[tauri::command]
-pub async fn reveal_download(_path: String) -> Result<(), String> { Ok(()) }
+pub async fn reveal_download(_path: String) -> Result<(), String> {
+    Ok(())
+}

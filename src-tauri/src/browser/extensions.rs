@@ -134,19 +134,23 @@ fn read_manifest(folder: &Path) -> (String, String, Option<String>, Option<Strin
     let mut name = v["name"].as_str().unwrap_or("Extension").to_string();
     // Localized names ("__MSG_appName__") → default_locale messages.json
     if name.starts_with("__MSG_") {
-        let key = name.trim_start_matches("__MSG_").trim_end_matches("__").to_string();
+        let key = name
+            .trim_start_matches("__MSG_")
+            .trim_end_matches("__")
+            .to_string();
         let locale = v["default_locale"].as_str().unwrap_or("en").to_string();
-        let resolved = std::fs::read_to_string(folder.join("_locales").join(&locale).join("messages.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|m| {
-                // message keys are case-insensitive in Chrome
-                m.as_object().and_then(|o| {
-                    o.iter()
-                        .find(|(k, _)| k.eq_ignore_ascii_case(&key))
-                        .and_then(|(_, e)| e["message"].as_str().map(String::from))
-                })
-            });
+        let resolved =
+            std::fs::read_to_string(folder.join("_locales").join(&locale).join("messages.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|m| {
+                    // message keys are case-insensitive in Chrome
+                    m.as_object().and_then(|o| {
+                        o.iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+                            .and_then(|(_, e)| e["message"].as_str().map(String::from))
+                    })
+                });
         if let Some(n) = resolved {
             name = n;
         }
@@ -158,19 +162,17 @@ fn read_manifest(folder: &Path) -> (String, String, Option<String>, Option<Strin
         .or_else(|| v["browser_action"]["default_popup"].as_str())
         .map(String::from);
     // Largest icon ≤ 128px
-    let icon = v["icons"]
-        .as_object()
-        .and_then(|o| {
-            let mut best: Option<(u32, String)> = None;
-            for (size, path) in o {
-                if let (Ok(s), Some(p)) = (size.parse::<u32>(), path.as_str()) {
-                    if s <= 128 && best.as_ref().map(|(bs, _)| s > *bs).unwrap_or(true) {
-                        best = Some((s, p.to_string()));
-                    }
+    let icon = v["icons"].as_object().and_then(|o| {
+        let mut best: Option<(u32, String)> = None;
+        for (size, path) in o {
+            if let (Ok(s), Some(p)) = (size.parse::<u32>(), path.as_str()) {
+                if s <= 128 && best.as_ref().map(|(bs, _)| s > *bs).unwrap_or(true) {
+                    best = Some((s, p.to_string()));
                 }
             }
-            best.map(|(_, p)| p)
-        });
+        }
+        best.map(|(_, p)| p)
+    });
     (name, version, popup, icon)
 }
 
@@ -188,8 +190,8 @@ fn any_webview(app: &AppHandle) -> Result<tauri::Webview, String> {
 /// extension id + name.
 #[cfg(windows)]
 async fn add_extension_native(app: &AppHandle, folder: &Path) -> Result<(String, String), String> {
-    use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
+    use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
     use windows_core::{Interface, HSTRING, PWSTR};
 
     let wv = any_webview(app)?;
@@ -197,7 +199,8 @@ async fn add_extension_native(app: &AppHandle, folder: &Path) -> Result<(String,
     let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String), String>>();
 
     wv.with_webview(move |pwv| unsafe {
-        let send_err = |tx: &std::sync::mpsc::Sender<Result<(String, String), String>>, e: String| {
+        let send_err = |tx: &std::sync::mpsc::Sender<Result<(String, String), String>>,
+                        e: String| {
             let _ = tx.send(Err(e));
         };
         let controller = pwv.controller();
@@ -245,8 +248,8 @@ async fn add_extension_native(app: &AppHandle, folder: &Path) -> Result<(String,
 /// (id, name, enabled) for every extension WebView2 has installed.
 #[cfg(windows)]
 async fn list_extensions_native(app: &AppHandle) -> Result<Vec<(String, String, bool)>, String> {
-    use webview2_com::ProfileGetBrowserExtensionsCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
+    use webview2_com::ProfileGetBrowserExtensionsCompletedHandler;
     use windows_core::{Interface, PWSTR};
 
     let wv = any_webview(app)?;
@@ -256,7 +259,10 @@ async fn list_extensions_native(app: &AppHandle) -> Result<Vec<(String, String, 
         let controller = pwv.controller();
         let core = match controller.CoreWebView2() {
             Ok(c) => c,
-            Err(e) => { let _ = tx.send(Err(e.to_string())); return; }
+            Err(e) => {
+                let _ = tx.send(Err(e.to_string()));
+                return;
+            }
         };
         let profile = match core
             .cast::<ICoreWebView2_13>()
@@ -264,7 +270,10 @@ async fn list_extensions_native(app: &AppHandle) -> Result<Vec<(String, String, 
             .and_then(|p| p.cast::<ICoreWebView2Profile7>())
         {
             Ok(p) => p,
-            Err(e) => { let _ = tx.send(Err(format!("extensions unsupported: {e}"))); return; }
+            Err(e) => {
+                let _ = tx.send(Err(format!("extensions unsupported: {e}")));
+                return;
+            }
         };
         let tx2 = tx.clone();
         let handler = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
@@ -316,11 +325,11 @@ async fn mutate_extension_native(
     ext_id: &str,
     action: ExtAction,
 ) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
     use webview2_com::{
         BrowserExtensionEnableCompletedHandler, BrowserExtensionRemoveCompletedHandler,
         ProfileGetBrowserExtensionsCompletedHandler,
     };
-    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
     use windows_core::{Interface, PWSTR};
 
     let wv = any_webview(app)?;
@@ -331,7 +340,10 @@ async fn mutate_extension_native(
         let controller = pwv.controller();
         let core = match controller.CoreWebView2() {
             Ok(c) => c,
-            Err(e) => { let _ = tx.send(Err(e.to_string())); return; }
+            Err(e) => {
+                let _ = tx.send(Err(e.to_string()));
+                return;
+            }
         };
         let profile = match core
             .cast::<ICoreWebView2_13>()
@@ -339,7 +351,10 @@ async fn mutate_extension_native(
             .and_then(|p| p.cast::<ICoreWebView2Profile7>())
         {
             Ok(p) => p,
-            Err(e) => { let _ = tx.send(Err(format!("extensions unsupported: {e}"))); return; }
+            Err(e) => {
+                let _ = tx.send(Err(format!("extensions unsupported: {e}")));
+                return;
+            }
         };
         let tx2 = tx.clone();
         let handler = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
@@ -355,7 +370,9 @@ async fn mutate_extension_native(
                 let mut count = 0u32;
                 let _ = list.Count(&mut count);
                 for i in 0..count {
-                    let Ok(ext) = list.GetValueAtIndex(i) else { continue };
+                    let Ok(ext) = list.GetValueAtIndex(i) else {
+                        continue;
+                    };
                     let mut id = PWSTR::null();
                     if ext.Id(&mut id).is_err() {
                         continue;
@@ -414,7 +431,10 @@ enum ExtAction {
 }
 
 #[cfg(not(windows))]
-async fn add_extension_native(_app: &AppHandle, _folder: &Path) -> Result<(String, String), String> {
+async fn add_extension_native(
+    _app: &AppHandle,
+    _folder: &Path,
+) -> Result<(String, String), String> {
     Err("extensions are Windows-only".into())
 }
 #[cfg(not(windows))]
@@ -436,17 +456,24 @@ async fn install_folder(app: &AppHandle, folder: &Path) -> Result<ExtensionInfo,
     }
     let (id, native_name) = add_extension_native(app, folder).await?;
     let (name, version, popup, icon) = read_manifest(folder);
-    let display_name = if native_name.trim().is_empty() { name } else { native_name };
+    let display_name = if native_name.trim().is_empty() {
+        name
+    } else {
+        native_name
+    };
     let folder_str = folder.to_string_lossy().to_string();
     let unpacked = is_unpacked_folder(app, &folder_str);
-    upsert_registry(app, ExtMeta {
-        id: id.clone(),
-        name: display_name.clone(),
-        version: version.clone(),
-        popup: popup.clone(),
-        icon: icon.clone(),
-        folder: folder_str,
-    });
+    upsert_registry(
+        app,
+        ExtMeta {
+            id: id.clone(),
+            name: display_name.clone(),
+            version: version.clone(),
+            popup: popup.clone(),
+            icon: icon.clone(),
+            folder: folder_str,
+        },
+    );
     let _ = app.emit("extensions-changed", ());
     Ok(ExtensionInfo {
         id,
@@ -471,11 +498,16 @@ async fn existing_extension(app: &AppHandle, ext_id: &str) -> Option<ExtensionIn
     let reg = load_registry(app);
     let meta = reg.iter().find(|m| m.id == id);
     Some(ExtensionInfo {
-        name: meta.map(|m| m.name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or(name),
+        name: meta
+            .map(|m| m.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or(name),
         version: meta.map(|m| m.version.clone()).unwrap_or_default(),
         popup: meta.and_then(|m| m.popup.clone()),
         has_icon: meta.map(|m| m.icon.is_some()).unwrap_or(false),
-        unpacked: meta.map(|m| is_unpacked_folder(app, &m.folder)).unwrap_or(false),
+        unpacked: meta
+            .map(|m| is_unpacked_folder(app, &m.folder))
+            .unwrap_or(false),
         id,
         enabled,
     })
@@ -488,7 +520,10 @@ fn is_webstore_id(s: &str) -> bool {
 /// Install a downloaded .crx: unpack next to our other extensions, then add.
 /// Used by both the panel Install button and the auto-install hook on
 /// page-initiated CRX downloads.
-pub(crate) async fn install_crx_file(app: &AppHandle, crx_path: &Path) -> Result<ExtensionInfo, String> {
+pub(crate) async fn install_crx_file(
+    app: &AppHandle,
+    crx_path: &Path,
+) -> Result<ExtensionInfo, String> {
     let stem = crx_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -532,7 +567,10 @@ async fn download_crx(ext_id: &str) -> Result<Vec<u8>, String> {
 
 /// Download the CRX for a Web Store extension id and install it.
 #[tauri::command]
-pub async fn install_crx_extension(app: AppHandle, ext_id: String) -> Result<ExtensionInfo, String> {
+pub async fn install_crx_extension(
+    app: AppHandle,
+    ext_id: String,
+) -> Result<ExtensionInfo, String> {
     if ext_id.len() != 32 || !ext_id.chars().all(|c| c.is_ascii_lowercase()) {
         return Err("invalid extension id".into());
     }
@@ -591,7 +629,9 @@ pub async fn install_unpacked_extension(app: AppHandle) -> Result<Option<Extensi
     })
     .await
     .map_err(|e| e.to_string())?;
-    let Some(folder) = picked else { return Ok(None) };
+    let Some(folder) = picked else {
+        return Ok(None);
+    };
     install_folder(&app, &folder).await.map(Some)
 }
 
@@ -611,7 +651,9 @@ pub async fn list_extensions(app: AppHandle) -> Result<Vec<ExtensionInfo>, Strin
                 version: meta.map(|m| m.version.clone()).unwrap_or_default(),
                 popup: meta.and_then(|m| m.popup.clone()),
                 has_icon: meta.map(|m| m.icon.is_some()).unwrap_or(false),
-                unpacked: meta.map(|m| is_unpacked_folder(&app, &m.folder)).unwrap_or(false),
+                unpacked: meta
+                    .map(|m| is_unpacked_folder(&app, &m.folder))
+                    .unwrap_or(false),
                 id,
                 enabled,
             }
@@ -640,7 +682,11 @@ pub async fn remove_extension(app: AppHandle, ext_id: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub async fn set_extension_enabled(app: AppHandle, ext_id: String, enabled: bool) -> Result<(), String> {
+pub async fn set_extension_enabled(
+    app: AppHandle,
+    ext_id: String,
+    enabled: bool,
+) -> Result<(), String> {
     mutate_extension_native(&app, &ext_id, ExtAction::SetEnabled(enabled)).await?;
     let _ = app.emit("extensions-changed", ());
     Ok(())
@@ -651,10 +697,16 @@ pub async fn set_extension_enabled(app: AppHandle, ext_id: String, enabled: bool
 #[tauri::command]
 pub async fn get_extension_icon(app: AppHandle, ext_id: String) -> Result<Option<String>, String> {
     let reg = load_registry(&app);
-    let Some(meta) = reg.iter().find(|m| m.id == ext_id) else { return Ok(None) };
-    let Some(icon_rel) = &meta.icon else { return Ok(None) };
+    let Some(meta) = reg.iter().find(|m| m.id == ext_id) else {
+        return Ok(None);
+    };
+    let Some(icon_rel) = &meta.icon else {
+        return Ok(None);
+    };
     let path = Path::new(&meta.folder).join(icon_rel.trim_start_matches('/'));
-    let Ok(bytes) = std::fs::read(&path) else { return Ok(None) };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(None);
+    };
     let mime = match path.extension().and_then(|e| e.to_str()) {
         Some("svg") => "image/svg+xml",
         Some("jpg") | Some("jpeg") => "image/jpeg",
@@ -690,7 +742,10 @@ pub async fn open_extension_popup(
     // effectively the client-area origin they're measured from.
     let main = app.get_window("main").ok_or("no main window")?;
     let scale = main.scale_factor().map_err(|e| e.to_string())?;
-    let main_pos = main.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    let main_pos = main
+        .outer_position()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
     let x = main_pos.x + anchor_x;
     let y = main_pos.y + anchor_y;
     let (w, h) = (360.0_f64, 480.0_f64);

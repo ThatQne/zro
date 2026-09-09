@@ -76,8 +76,15 @@ fn reg_set(subkey: &str, name: Option<&str>, value: &str) -> bool {
         let sub = wide(subkey);
         let mut hkey = HKEY::default();
         let rc = RegCreateKeyExW(
-            HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), None, PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut hkey, None,
+            HKEY_CURRENT_USER,
+            PCWSTR(sub.as_ptr()),
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut hkey,
+            None,
         );
         if rc != ERROR_SUCCESS {
             return false;
@@ -85,7 +92,10 @@ fn reg_set(subkey: &str, name: Option<&str>, value: &str) -> bool {
         let v = wide(value);
         let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2);
         let n = name.map(wide);
-        let name_ptr = n.as_ref().map(|w| PCWSTR(w.as_ptr())).unwrap_or(PCWSTR::null());
+        let name_ptr = n
+            .as_ref()
+            .map(|w| PCWSTR(w.as_ptr()))
+            .unwrap_or(PCWSTR::null());
         let rc = RegSetValueExW(hkey, name_ptr, Some(0), REG_SZ, Some(bytes));
         let _ = RegCloseKey(hkey);
         rc == ERROR_SUCCESS
@@ -102,16 +112,26 @@ fn reg_get(subkey: &str) -> Option<String> {
         let sub = wide(subkey);
         let mut cb: u32 = 0;
         let rc = RegGetValueW(
-            HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR::null(),
-            RRF_RT_REG_SZ, None, None, Some(&mut cb),
+            HKEY_CURRENT_USER,
+            PCWSTR(sub.as_ptr()),
+            PCWSTR::null(),
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut cb),
         );
         if rc != ERROR_SUCCESS || cb == 0 {
             return None;
         }
         let mut buf = vec![0u16; (cb as usize / 2) + 1];
         let rc = RegGetValueW(
-            HKEY_CURRENT_USER, PCWSTR(sub.as_ptr()), PCWSTR::null(),
-            RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut cb),
+            HKEY_CURRENT_USER,
+            PCWSTR(sub.as_ptr()),
+            PCWSTR::null(),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut cb),
         );
         if rc != ERROR_SUCCESS {
             return None;
@@ -154,7 +174,11 @@ pub fn register() -> Result<(), String> {
     // ProgId: how Windows opens an http(s) document with zro.
     let classes = format!("Software\\Classes\\{PROGID}");
     reg_set(&classes, None, "zro HTML Document");
-    reg_set(&format!("{classes}\\DefaultIcon"), None, &format!("{exe},0"));
+    reg_set(
+        &format!("{classes}\\DefaultIcon"),
+        None,
+        &format!("{exe},0"),
+    );
     reg_set(
         &format!("{classes}\\shell\\open\\command"),
         None,
@@ -164,7 +188,11 @@ pub fn register() -> Result<(), String> {
     // Capabilities: name + which URL schemes zro claims.
     let caps = "Software\\zro\\Capabilities";
     reg_set(caps, Some("ApplicationName"), "zro");
-    reg_set(caps, Some("ApplicationDescription"), "A fast, minimalist browser.");
+    reg_set(
+        caps,
+        Some("ApplicationDescription"),
+        "A fast, minimalist browser.",
+    );
     let assoc = format!("{caps}\\URLAssociations");
     reg_set(&assoc, Some("http"), PROGID);
     reg_set(&assoc, Some("https"), PROGID);
@@ -212,7 +240,9 @@ pub fn is_registered() -> bool {
 /// hijack the association.
 #[cfg(windows)]
 pub(crate) fn heal_registration() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let exe = exe.to_string_lossy().to_string();
     if is_dev_exe(&exe) {
         return;

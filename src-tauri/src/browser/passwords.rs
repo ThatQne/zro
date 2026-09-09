@@ -105,14 +105,19 @@ fn read_logins(ebwebview: &Path) -> Result<Vec<(String, String, Vec<u8>)>, Strin
         return Ok(Vec::new());
     }
     // file: URI needs forward slashes; immutable=1 => no locks, safe live read.
-    let uri = format!("file:{}?immutable=1", db.to_string_lossy().replace('\\', "/"));
+    let uri = format!(
+        "file:{}?immutable=1",
+        db.to_string_lossy().replace('\\', "/")
+    );
     let conn = rusqlite::Connection::open_with_flags(
         &uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )
     .map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT origin_url, username_value, password_value FROM logins ORDER BY origin_url")
+        .prepare(
+            "SELECT origin_url, username_value, password_value FROM logins ORDER BY origin_url",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {

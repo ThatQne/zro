@@ -30,13 +30,18 @@ pub struct OverlayRect {
 /// Recompute and apply the UI webview's window region:
 /// full window − rounded content hole + overlay rects.
 pub fn update_ui_region(app: &AppHandle) {
+    let _timing = super::resources::span("overlay-update");
     let state = app.state::<Mutex<BrowserState>>();
     let (layout, overlays, fullscreen, page_hidden) = {
         let s = state.lock().unwrap();
         (s.layout, s.overlays.clone(), s.fullscreen, s.page_hidden)
     };
-    let Some(main) = app.get_window("main") else { return };
-    let (Ok(inner), Ok(scale)) = (main.inner_size(), main.scale_factor()) else { return };
+    let Some(main) = app.get_window("main") else {
+        return;
+    };
+    let (Ok(inner), Ok(scale)) = (main.inner_size(), main.scale_factor()) else {
+        return;
+    };
     let (win_w, win_h) = (inner.width as i32, inner.height as i32);
     if win_w <= 0 || win_h <= 0 {
         return;
@@ -65,7 +70,11 @@ pub fn update_ui_region(app: &AppHandle) {
     // Active page hidden (long-idle freeze): keep the region SOLID — no hole.
     // The window is transparent, so a hole over a hidden webview shows the
     // desktop through ("window turns see-through after idling").
-    let hole = if page_hidden { (0, 0, 0, 0) } else { (hx, hy, hr, hb) };
+    let hole = if page_hidden {
+        (0, 0, 0, 0)
+    } else {
+        (hx, hy, hr, hb)
+    };
 
     // SetWindowRgn(…, redraw=true) forces a full chrome repaint, and callers
     // re-assert repeatedly (page-load re-stacks, live resize, tab switch).
@@ -82,14 +91,32 @@ pub fn update_ui_region(app: &AppHandle) {
         }
     };
 
-    let Some(ui) = app.get_webview("main") else { return };
-    apply_region(&ui, win_w, win_h, hole, hole_radius, fullscreen, ov_px, set_region);
+    let Some(ui) = app.get_webview("main") else {
+        return;
+    };
+    apply_region(
+        &ui,
+        win_w,
+        win_h,
+        hole,
+        hole_radius,
+        fullscreen,
+        ov_px,
+        set_region,
+    );
 }
 
 /// Signature of the last-applied window region (see update_ui_region).
 #[allow(clippy::type_complexity)]
 static LAST_REGION: Mutex<
-    Option<(i32, i32, (i32, i32, i32, i32), i32, bool, Vec<(i32, i32, i32, i32, i32)>)>,
+    Option<(
+        i32,
+        i32,
+        (i32, i32, i32, i32),
+        i32,
+        bool,
+        Vec<(i32, i32, i32, i32, i32)>,
+    )>,
 > = Mutex::new(None);
 
 #[cfg(windows)]

@@ -1,10 +1,11 @@
 {
   "name": "zro",
   "private": true,
-  "version": "0.1.14",
+  "version": "0.1.15",
   "type": "module",
   "license": "AGPL-3.0-or-later OR LicenseRef-Commercial",
   "scripts": {
+    "test:browser": "node --test scripts/browser-interactions.test.cjs scripts/resource-scheduler.test.cjs scripts/arcade.test.cjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

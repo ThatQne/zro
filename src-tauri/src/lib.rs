@@ -110,6 +110,10 @@ pub fn run() {
             browser::close_browser_tab,
             browser::hibernate_tab,
             browser::suspend_tab,
+            browser::get_resource_sample,
+            browser::set_background_budget,
+            browser::set_performance_tracing,
+            browser::get_performance_trace,
             browser::set_idle_freeze_min,
             browser::set_shield_config,
             browser::get_shield_stats,
@@ -191,11 +195,14 @@ pub fn run() {
                 let s = state.lock().unwrap();
                 (s.menu_ctx.clone(), s.page_menu_ctx.clone())
             };
-            let _ = app.emit("ctx-action", serde_json::json!({
-                "action": event.id().0,
-                "ctx": ctx,
-                "page": page,
-            }));
+            let _ = app.emit(
+                "ctx-action",
+                serde_json::json!({
+                    "action": event.id().0,
+                    "ctx": ctx,
+                    "page": page,
+                }),
+            );
         })
         .setup(|app| {
             // Dual-GPU laptops otherwise default WebView2 to the weak
@@ -221,8 +228,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             // Plain Window handle — get_webview_window("main") stops matching
             // once tab webviews are added (multiwebview), see browser.rs note.
-            let main_window = app.get_window("main")
-                .expect("main window missing");
+            let main_window = app.get_window("main").expect("main window missing");
 
             // Taskbar/titlebar icon. The bundled .ico wires up the built exe,
             // but `tauri dev` and the undecorated transparent window otherwise
@@ -237,7 +243,8 @@ pub fn run() {
             // Also notify JS so React-side layout (maximize detection) updates.
             main_window.on_window_event(move |event| {
                 match event {
-                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                    tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. } => {
                         // Minimized = user is elsewhere → freeze every page
                         // renderer (audio excluded); restore thaws the active
                         // tab. A minimized zro should cost close to nothing.
@@ -267,7 +274,8 @@ pub fn run() {
                                 let _ = tokio::time::timeout(
                                     std::time::Duration::from_secs(3),
                                     browser::session_cookies::snapshot(&app),
-                                ).await;
+                                )
+                                .await;
                                 if let Some(w) = app.get_window("main") {
                                     let _ = w.destroy();
                                 }
@@ -326,9 +334,10 @@ pub fn run() {
             // (waits for the session-cookie restore internally)
             browser::tabs::ensure_spare(app.handle());
 
-            // Browsing-data growth is unbounded in WebView2 — trim the
-            // rebuildable cache once it crosses the cap (90s after boot)
-            browser::auto_trim_cache(app.handle());
+            // Let Chromium evict its HTTP cache. A UDF-size threshold also
+            // counted cookies/site data, then repeatedly erased useful cache
+            // (including service-worker offline assets) on otherwise normal use.
+            // Cache clearing remains an explicit action in the Usage panel.
 
             // Set taskbar / title-bar icon (embedded at compile time)
             let _ = main_window.set_icon(tauri::include_image!("icons/icon.png"));

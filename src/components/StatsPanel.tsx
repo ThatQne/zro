@@ -55,9 +55,22 @@ export default function StatsPanel({ onClose }: Props) {
   const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [disk, setDisk] = useState<DiskItem[] | null>(null);
   const [trim, setTrim] = useState<"idle" | "busy" | number>("idle");
+  const pressure = useBrowserStore(s => s.memoryPressure);
+  const [trace, setTrace] = useState<{ name: string; samples: number; p95_ms: number; max_ms: number }[]>([]);
+  const [tracing, setTracing] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    invoke("set_performance_tracing", { enabled: tracing }).catch(() => {});
+    if (!tracing) return;
+    const timer = setInterval(() => {
+      if (!document.hidden) invoke<typeof trace>("get_performance_trace").then(rows => { if (alive) setTrace(rows); }).catch(() => {});
+    }, 2000);
+    return () => { alive = false; clearInterval(timer); invoke("set_performance_tracing", { enabled: false }).catch(() => {}); };
+  }, [tracing]);
 
   // Clears the rebuildable parts only (HTTP cache + service-worker caches) —
-  // cookies, logins, history and site storage stay. Auto-runs at 512 MB too.
+  // cookies and logins stay. This is manual; offline caches may be removed.
   function trimCache() {
     if (trim === "busy") return;
     setTrim("busy");
@@ -200,6 +213,14 @@ export default function StatsPanel({ onClose }: Props) {
       </div>
 
       <div style={{ flex: 1, padding: "10px 14px 16px", display: "flex", flexDirection: "column", gap: 8, overflowY: "auto" }}>
+        <div style={{ fontSize: 11, color: "#aaa" }}>Memory pressure: {pressure}</div>
+        <button onClick={() => setTracing(v => !v)} style={{ fontSize: 11, color: "#aaa" }}>
+          {tracing ? "Stop native timing capture" : "Capture native timings"}
+        </button>
+        {tracing && <div style={{ fontSize: 10, color: "#888" }}>
+          Last 256 samples per operation; milliseconds, not page paint time.
+          {trace.map(row => <div key={row.name}>{row.name}: p95 {row.p95_ms.toFixed(2)} · max {row.max_ms.toFixed(2)} ({row.samples})</div>)}
+        </div>}
         {/* Counts — big numbers, read at a glance */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
           <Tile label="Tabs" value={tabs.length} />

@@ -12,15 +12,18 @@
 
 pub mod clipboard;
 pub mod cookies;
+pub(crate) mod decision_cache;
 pub mod default_browser;
 pub mod downloads;
 pub mod extensions;
 pub mod layout;
 pub mod memory;
 pub mod menus;
+pub(crate) mod new_tab;
 pub mod overlay;
 pub mod passwords;
 pub mod perf;
+pub mod resources;
 pub mod search;
 pub mod session_cookies;
 pub mod shields;
@@ -36,6 +39,7 @@ pub use memory::*;
 pub use menus::*;
 pub use overlay::*;
 pub use passwords::*;
+pub use resources::*;
 pub use search::*;
 pub use shields::*;
 pub use system::*;
@@ -154,7 +158,10 @@ pub fn tab_webview(app: &AppHandle, tab_id: &str) -> Option<tauri::Webview> {
 pub(crate) fn tab_label(app: &AppHandle, tab_id: &str) -> String {
     let state = app.state::<Mutex<BrowserState>>();
     let s = state.lock().unwrap();
-    s.labels.get(tab_id).cloned().unwrap_or_else(|| tab_id.to_string())
+    s.labels
+        .get(tab_id)
+        .cloned()
+        .unwrap_or_else(|| tab_id.to_string())
 }
 
 /// Tab id owning a webview label (None = unadopted spare → suppress events).

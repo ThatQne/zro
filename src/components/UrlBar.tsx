@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Lock, Search, Clock, Globe, CornerDownLeft } from "lucide-react";
-import { inProfile, useBrowserStore } from "../store/tabs";
+import { inProfile, useBrowserStore, NEW_TAB_URL } from "../store/tabs";
 import { trackOverlay } from "../store/overlays";
 
 const ROW_H = 30;
@@ -18,6 +18,7 @@ interface Suggestion {
 export default function UrlBar() {
   const { tabs: allTabs, activeTabId, navigate, history, switchTab, isIncognito, settings } = useBrowserStore();
   const activeTab = allTabs.find((t) => t.id === activeTabId);
+  const editableUrl = activeTab?.url === NEW_TAB_URL ? "" : activeTab?.url ?? "";
   // "Switch to tab" suggestions stay inside the current tab space —
   // profiles are separate browsers, incognito is a separate mode
   const tabs = allTabs.filter(
@@ -49,7 +50,7 @@ export default function UrlBar() {
   const restoringRef = useRef(false);
 
   useEffect(() => {
-    if (!editing) setValue(activeTab?.url ?? "");
+    if (!editing) setValue(editableUrl);
   }, [activeTab?.url, editing]);
 
   // Ctrl+L / Ctrl+E / new tab — focus and select the URL bar
@@ -278,9 +279,9 @@ export default function UrlBar() {
     intentRef.current = false;
     setEditing(true);
     setDirty(false);
-    setValue(activeTab?.url ?? "");
+    setValue(editableUrl);
     setCompletion(null);
-    shownRef.current = activeTab?.url ?? "";
+    shownRef.current = editableUrl;
     setTimeout(() => inputRef.current?.select(), 0);
   }
 
@@ -316,14 +317,14 @@ export default function UrlBar() {
     }
     if (e.key === "Escape") {
       close();
-      setValue(activeTab?.url ?? "");
+      setValue(editableUrl);
       inputRef.current?.blur();
     }
   }
 
   function displayValue(): string {
     if (editing) return value;
-    if (!activeTab?.url) return "";
+    if (!activeTab?.url || activeTab.url === NEW_TAB_URL) return "";
     try {
       const u = new URL(activeTab.url);
       return u.hostname || activeTab.url;

@@ -39,7 +39,10 @@ fn target_uri(app: &AppHandle, url: Option<String>) -> Result<String, String> {
 }
 
 /// All cookies visible to `url` (defaults to the active tab's page).
-pub(crate) async fn cookies_for(app: &AppHandle, url: Option<String>) -> Result<Vec<CookieInfo>, String> {
+pub(crate) async fn cookies_for(
+    app: &AppHandle,
+    url: Option<String>,
+) -> Result<Vec<CookieInfo>, String> {
     let uri = target_uri(app, url)?;
     let wv = active_webview(app).ok_or("no active tab")?;
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<CookieInfo>, String>>();
@@ -48,7 +51,9 @@ pub(crate) async fn cookies_for(app: &AppHandle, url: Option<String>) -> Result<
     wv.with_webview(move |pwv| unsafe {
         use webview2_com::take_pwstr;
         use webview2_com::GetCookiesCompletedHandler;
-        use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2CookieList, ICoreWebView2_2};
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2CookieList, ICoreWebView2_2,
+        };
         use windows_core::{Interface, BOOL, HSTRING, PWSTR};
 
         let controller = pwv.controller();
@@ -72,7 +77,9 @@ pub(crate) async fn cookies_for(app: &AppHandle, url: Option<String>) -> Result<
                     let mut count = 0u32;
                     let _ = list.Count(&mut count);
                     for i in 0..count {
-                        let Ok(c) = list.GetValueAtIndex(i) else { continue };
+                        let Ok(c) = list.GetValueAtIndex(i) else {
+                            continue;
+                        };
                         let mut p = PWSTR::null();
                         let _ = c.Name(&mut p);
                         let name = take_pwstr(p);

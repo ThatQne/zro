@@ -51,7 +51,12 @@ pub fn set_search_config(
     google_cse_key: Option<String>,
     google_cse_cx: Option<String>,
 ) -> Result<(), String> {
-    let clean = |s: Option<String>| s.unwrap_or_default().trim().trim_end_matches('/').to_string();
+    let clean = |s: Option<String>| {
+        s.unwrap_or_default()
+            .trim()
+            .trim_end_matches('/')
+            .to_string()
+    };
     let cfg = SearchConfig {
         searxng_url: clean(searxng_url),
         google_cse_key: clean(google_cse_key),
@@ -72,7 +77,13 @@ pub(crate) fn config(app: &AppHandle) -> SearchConfig {
         .and_then(|s| s.lock().ok().map(|g| g.clone()))
         .unwrap_or_default();
 
-    let env = |k: &str| std::env::var(k).unwrap_or_default().trim().trim_end_matches('/').to_string();
+    let env = |k: &str| {
+        std::env::var(k)
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches('/')
+            .to_string()
+    };
     if cfg.searxng_url.is_empty() {
         cfg.searxng_url = env("ZRO_SEARXNG_URL");
     }
@@ -127,7 +138,13 @@ fn cache_put(key: String, val: String) {
             map.remove(&k);
         }
     }
-    map.insert(key, Cached { at: Instant::now(), val });
+    map.insert(
+        key,
+        Cached {
+            at: Instant::now(),
+            val,
+        },
+    );
 }
 
 // ── HTTP + HTML helpers ──────────────────────────────────────────────────────
@@ -215,7 +232,18 @@ pub(crate) fn clip_chars(s: &str, max: usize) -> String {
 fn prose_re() -> &'static regex::Regex {
     static R: OnceLock<regex::Regex> = OnceLock::new();
     R.get_or_init(|| {
-        let tags = ["p", "li", "h1", "h2", "h3", "h4", "blockquote", "dd", "td", "pre"];
+        let tags = [
+            "p",
+            "li",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "blockquote",
+            "dd",
+            "td",
+            "pre",
+        ];
         let alts: Vec<String> = tags
             .iter()
             .map(|t| format!(r"<{t}\b[^>]*>([\s\S]*?)</{t}\s*>"))
@@ -234,8 +262,13 @@ pub(crate) fn extract_text(html: &str) -> String {
     let mut seen: Vec<String> = Vec::new();
     for caps in prose_re().captures_iter(&cleaned) {
         // Exactly one alternative matched, so exactly one group is populated.
-        let Some(inner) = caps.iter().skip(1).flatten().next() else { continue };
-        let text = strip_tags(inner.as_str()).split_whitespace().collect::<Vec<_>>().join(" ");
+        let Some(inner) = caps.iter().skip(1).flatten().next() else {
+            continue;
+        };
+        let text = strip_tags(inner.as_str())
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         if text.chars().count() < 25 {
             continue;
         }
@@ -276,8 +309,12 @@ pub(crate) fn extract_date(html: &str) -> Option<String> {
     const NAMES: &str =
         "article:published_time|datePublished|pubdate|publishdate|publish-date|date|dc.date|dc.date.issued|citation_publication_date|parsely-pub-date|og:published_time";
     let patterns = [
-        format!(r#"(?i)<meta[^>]+(?:property|name)\s*=\s*["'](?:{NAMES})["'][^>]*content\s*=\s*["']([^"']+)["']"#),
-        format!(r#"(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["'](?:{NAMES})["']"#),
+        format!(
+            r#"(?i)<meta[^>]+(?:property|name)\s*=\s*["'](?:{NAMES})["'][^>]*content\s*=\s*["']([^"']+)["']"#
+        ),
+        format!(
+            r#"(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["'](?:{NAMES})["']"#
+        ),
         r#"(?i)"datePublished"\s*:\s*"([^"]+)""#.to_string(),
         r#"(?i)<time[^>]+datetime\s*=\s*["']([^"']+)["']"#.to_string(),
     ];
@@ -285,12 +322,15 @@ pub(crate) fn extract_date(html: &str) -> Option<String> {
 }
 
 pub(crate) fn extract_title(html: &str) -> String {
-    first_capture(html, r#"(?i)<meta[^>]+property\s*=\s*["']og:title["'][^>]*content\s*=\s*["']([^"']+)["']"#)
-        .or_else(|| first_capture(html, r"(?is)<title[^>]*>(.*?)</title>").map(|t| strip_tags(&t)))
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    first_capture(
+        html,
+        r#"(?i)<meta[^>]+property\s*=\s*["']og:title["'][^>]*content\s*=\s*["']([^"']+)["']"#,
+    )
+    .or_else(|| first_capture(html, r"(?is)<title[^>]*>(.*?)</title>").map(|t| strip_tags(&t)))
+    .unwrap_or_default()
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 // ── BM25 passage selection ───────────────────────────────────────────────────
@@ -419,13 +459,21 @@ struct Hit {
 
 /// DDG wraps result hrefs as //duckduckgo.com/l/?uddg=<real-url> — unwrap them.
 fn unwrap_ddg_href(href: &str) -> Option<String> {
-    let abs = if href.starts_with("//") { format!("https:{href}") } else { href.to_string() };
+    let abs = if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        href.to_string()
+    };
     let u = url::Url::parse(&abs).ok()?;
-    if u.host_str().map_or(false, |h| h.ends_with("duckduckgo.com")) {
+    if u.host_str()
+        .map_or(false, |h| h.ends_with("duckduckgo.com"))
+    {
         if u.path().contains("y.js") {
             return None; // ad redirect
         }
-        u.query_pairs().find(|(k, _)| k == "uddg").map(|(_, v)| v.into_owned())
+        u.query_pairs()
+            .find(|(k, _)| k == "uddg")
+            .map(|(_, v)| v.into_owned())
     } else {
         Some(abs)
     }
@@ -435,10 +483,12 @@ fn parse_ddg(html: &str) -> Vec<Hit> {
     static RESULT_A: OnceLock<regex::Regex> = OnceLock::new();
     static SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
     let re_a = RESULT_A.get_or_init(|| {
-        regex::Regex::new(r#"(?s)<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap()
+        regex::Regex::new(r#"(?s)<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#)
+            .unwrap()
     });
-    let re_s = SNIPPET
-        .get_or_init(|| regex::Regex::new(r#"(?s)<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#).unwrap());
+    let re_s = SNIPPET.get_or_init(|| {
+        regex::Regex::new(r#"(?s)<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#).unwrap()
+    });
 
     re_a.captures_iter(html)
         .filter_map(|c| {
@@ -494,8 +544,12 @@ fn parse_mojeek(html: &str) -> Vec<Hit> {
 }
 
 async fn scrape(client: &reqwest::Client, url: &str, parse: fn(&str) -> Vec<Hit>) -> Vec<Hit> {
-    let Ok(resp) = client.get(url).send().await else { return vec![] };
-    let Ok(html) = resp.text().await else { return vec![] };
+    let Ok(resp) = client.get(url).send().await else {
+        return vec![];
+    };
+    let Ok(html) = resp.text().await else {
+        return vec![];
+    };
     parse(&html)
 }
 
@@ -506,12 +560,20 @@ async fn searxng(client: &reqwest::Client, q: &str, cfg: &SearchConfig) -> Vec<H
     if cfg.searxng_url.is_empty() {
         return vec![];
     }
-    let url = format!("{}/search?q={}&format=json&categories=general%2Cnews", cfg.searxng_url, enc(q));
-    let Ok(resp) = client.get(&url).send().await else { return vec![] };
+    let url = format!(
+        "{}/search?q={}&format=json&categories=general%2Cnews",
+        cfg.searxng_url,
+        enc(q)
+    );
+    let Ok(resp) = client.get(&url).send().await else {
+        return vec![];
+    };
     if !resp.status().is_success() {
         return vec![];
     }
-    let Ok(v) = resp.json::<serde_json::Value>().await else { return vec![] };
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return vec![];
+    };
     v["results"]
         .as_array()
         .map(|rows| {
@@ -543,11 +605,15 @@ async fn google_cse(client: &reqwest::Client, q: &str, cfg: &SearchConfig) -> Ve
         enc(&cfg.google_cse_cx),
         enc(q)
     );
-    let Ok(resp) = client.get(&url).send().await else { return vec![] };
+    let Ok(resp) = client.get(&url).send().await else {
+        return vec![];
+    };
     if !resp.status().is_success() {
         return vec![];
     }
-    let Ok(v) = resp.json::<serde_json::Value>().await else { return vec![] };
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return vec![];
+    };
     v["items"]
         .as_array()
         .map(|rows| {
@@ -584,11 +650,21 @@ async fn search_one(client: &reqwest::Client, q: &str, cfg: &SearchConfig) -> Ve
     if !hits.is_empty() {
         return hits;
     }
-    let hits = scrape(client, &format!("https://html.duckduckgo.com/html/?q={}", enc(q)), parse_ddg).await;
+    let hits = scrape(
+        client,
+        &format!("https://html.duckduckgo.com/html/?q={}", enc(q)),
+        parse_ddg,
+    )
+    .await;
     if !hits.is_empty() {
         return hits;
     }
-    scrape(client, &format!("https://www.mojeek.com/search?q={}", enc(q)), parse_mojeek).await
+    scrape(
+        client,
+        &format!("https://www.mojeek.com/search?q={}", enc(q)),
+        parse_mojeek,
+    )
+    .await
 }
 
 // ── Fusion ───────────────────────────────────────────────────────────────────
@@ -596,13 +672,16 @@ async fn search_one(client: &reqwest::Client, q: &str, cfg: &SearchConfig) -> Ve
 /// Same page, different URL spellings — tracking params and `www.` would
 /// otherwise let one result occupy three slots.
 fn norm_url(raw: &str) -> String {
-    let Ok(mut u) = url::Url::parse(raw) else { return raw.trim_end_matches('/').to_lowercase() };
+    let Ok(mut u) = url::Url::parse(raw) else {
+        return raw.trim_end_matches('/').to_lowercase();
+    };
     u.set_fragment(None);
     let keep: Vec<(String, String)> = u
         .query_pairs()
         .filter(|(k, _)| {
             let k = k.to_lowercase();
-            !(k.starts_with("utm_") || matches!(k.as_str(), "fbclid" | "gclid" | "ref" | "ref_src" | "spm"))
+            !(k.starts_with("utm_")
+                || matches!(k.as_str(), "fbclid" | "gclid" | "ref" | "ref_src" | "spm"))
         })
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
@@ -611,7 +690,11 @@ fn norm_url(raw: &str) -> String {
     } else {
         u.query_pairs_mut().clear().extend_pairs(keep);
     }
-    let host = u.host_str().unwrap_or("").trim_start_matches("www.").to_lowercase();
+    let host = u
+        .host_str()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_lowercase();
     let path = u.path().trim_end_matches('/').to_string();
     let query = u.query().map(|q| format!("?{q}")).unwrap_or_default();
     format!("{host}{path}{query}")
@@ -666,7 +749,11 @@ fn fuse(lists: &[(String, Vec<Hit>)], limit: usize) -> Vec<serde_json::Value> {
     }
 
     let mut merged: Vec<Merged> = by_url.into_values().collect();
-    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     merged
         .into_iter()
@@ -748,7 +835,9 @@ pub(crate) async fn web_search(app: &AppHandle, queries: &[String]) -> Result<St
     // the JSON format being disabled, and silently falling back to a scraper
     // looks like "search is just bad" rather than a one-line config fix.
     if !cfg.searxng_url.is_empty()
-        && !lists.iter().any(|(_, h)| h.iter().any(|x| x.engine == "searxng"))
+        && !lists
+            .iter()
+            .any(|(_, h)| h.iter().any(|x| x.engine == "searxng"))
     {
         out["note"] = serde_json::json!(
             "SearXNG is configured but returned nothing — check it is running and that settings.yml has `formats: [html, json]`"
@@ -787,7 +876,8 @@ async fn fetch_doc(client: &reqwest::Client, url: &str) -> Result<Doc, String> {
         .unwrap_or("")
         .to_lowercase();
 
-    if !content_type.is_empty() && !content_type.contains("html") && !content_type.contains("text") {
+    if !content_type.is_empty() && !content_type.contains("html") && !content_type.contains("text")
+    {
         return Ok(Doc {
             status,
             title: String::new(),
@@ -914,7 +1004,10 @@ mod tests {
         let text = format!("{filler}\n{needle}\n{filler}");
 
         let ranked = rank_passages(&text, "refund window closes", 900);
-        assert!(ranked.contains(needle), "buried answer must survive truncation");
+        assert!(
+            ranked.contains(needle),
+            "buried answer must survive truncation"
+        );
         assert!(ranked.chars().count() < text.chars().count());
     }
 
@@ -954,8 +1047,14 @@ mod tests {
         };
         // `both` is second on each list; `only` is first on one. Agreement wins.
         let lists = vec![
-            ("q1".to_string(), vec![hit("https://a.com/only"), hit("https://b.com/both")]),
-            ("q2".to_string(), vec![hit("https://c.com/other"), hit("https://b.com/both")]),
+            (
+                "q1".to_string(),
+                vec![hit("https://a.com/only"), hit("https://b.com/both")],
+            ),
+            (
+                "q2".to_string(),
+                vec![hit("https://c.com/other"), hit("https://b.com/both")],
+            ),
         ];
         let fused = fuse(&lists, 5);
         assert_eq!(fused[0]["url"], "https://b.com/both");
@@ -965,7 +1064,10 @@ mod tests {
     #[test]
     fn ddg_hrefs_unwrap() {
         let wrapped = "//duckduckgo.com/l/?uddg=https%3A%2F%2Freal.example%2Fpage&rut=abc";
-        assert_eq!(unwrap_ddg_href(wrapped).as_deref(), Some("https://real.example/page"));
+        assert_eq!(
+            unwrap_ddg_href(wrapped).as_deref(),
+            Some("https://real.example/page")
+        );
         assert_eq!(unwrap_ddg_href("//duckduckgo.com/y.js?ad=1"), None);
     }
 }

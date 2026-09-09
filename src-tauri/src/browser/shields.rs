@@ -61,7 +61,11 @@ pub(crate) fn seed_chrome_version() {
         if GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut v).is_ok() {
             let s = webview2_com::take_pwstr(v);
             // "126.0.2592.68 dev" → 126
-            if let Some(major) = s.split('.').next().and_then(|m| m.trim().parse::<u64>().ok()) {
+            if let Some(major) = s
+                .split('.')
+                .next()
+                .and_then(|m| m.trim().parse::<u64>().ok())
+            {
                 if major > 0 {
                     CHROME_MAJOR.store(major, Ordering::Relaxed);
                 }
@@ -163,6 +167,9 @@ pub(crate) fn strip_on() -> bool {
 #[cfg(windows)]
 thread_local! {
     static SHIELD_ENGINE: RefCell<Option<adblock::Engine>> = const { RefCell::new(None) };
+    // 256 entries, keys capped at 4 KiB below: bounded session-only metadata.
+    static DECISIONS: RefCell<super::decision_cache::ClockCache<(String, String, String), bool>> =
+        RefCell::new(super::decision_cache::ClockCache::new(256));
 }
 
 const LIST_UA: &str =
@@ -268,7 +275,10 @@ pub(crate) const FARBLE_JS: &str = r#"
 /// The default block lists — the same core set Brave ships with.
 const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
-    ("easyprivacy.txt", "https://easylist.to/easylist/easyprivacy.txt"),
+    (
+        "easyprivacy.txt",
+        "https://easylist.to/easylist/easyprivacy.txt",
+    ),
 ];
 
 #[cfg(windows)]
@@ -346,7 +356,12 @@ pub fn init_shields(app: &tauri::AppHandle) {
             .iter()
             .filter_map(|(name, _)| std::fs::metadata(dir.join(name)).ok()?.modified().ok())
             .max();
-        let dat_fresh = match (std::fs::metadata(&dat_path).ok().and_then(|m| m.modified().ok()), lists_newest) {
+        let dat_fresh = match (
+            std::fs::metadata(&dat_path)
+                .ok()
+                .and_then(|m| m.modified().ok()),
+            lists_newest,
+        ) {
             (Some(dat), Some(lists)) => dat >= lists,
             _ => false,
         };
@@ -382,6 +397,8 @@ pub fn init_shields(app: &tauri::AppHandle) {
             let mut engine = adblock::Engine::default();
             if engine.deserialize(&dat).is_ok() {
                 SHIELD_ENGINE.with(|cell| *cell.borrow_mut() = Some(engine));
+                DECISIONS
+                    .with(|cell| *cell.borrow_mut() = super::decision_cache::ClockCache::new(256));
                 READY.store(true, Ordering::Relaxed);
                 eprintln!("[shields] block engine ready");
             } else {
@@ -429,6 +446,7 @@ fn host_of(u: &str) -> &str {
 /// (the engine is thread-local there). Increments the blocked counter on a hit.
 #[cfg(windows)]
 pub(crate) fn should_block(url: &str, source_url: &str, request_type: &str) -> bool {
+    let _timing = super::resources::span("shields-decision");
     if !SHIELDS_ON.load(Ordering::Relaxed)
         || !BLOCK_ADS.load(Ordering::Relaxed)
         || !READY.load(Ordering::Relaxed)
@@ -443,14 +461,35 @@ pub(crate) fn should_block(url: &str, source_url: &str, request_type: &str) -> b
     if !source_url.is_empty() && host_of(url) == host_of(source_url) {
         return false;
     }
+    let key = (url.len() + source_url.len() + request_type.len() <= 4096).then(|| {
+        (
+            url.to_string(),
+            source_url.to_string(),
+            request_type.to_string(),
+        )
+    });
+    if let Some(result) = key
+        .as_ref()
+        .and_then(|key| DECISIONS.with(|c| c.borrow_mut().get(key)))
+    {
+        if result {
+            BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        return result;
+    }
     let matched = SHIELD_ENGINE.with(|cell| {
         let borrowed = cell.borrow();
-        let Some(engine) = borrowed.as_ref() else { return false };
+        let Some(engine) = borrowed.as_ref() else {
+            return false;
+        };
         match adblock::request::Request::new(url, source_url, request_type, "GET") {
             Ok(req) => engine.check_network_request(&req).should_block(),
             Err(_) => false,
         }
     });
+    if let Some(key) = key {
+        DECISIONS.with(|c| c.borrow_mut().insert(key, matched));
+    }
     if matched {
         BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
     }
@@ -466,10 +505,34 @@ pub(crate) fn should_block(_url: &str, _source_url: &str, _request_type: &str) -
 
 /// Known tracking params to strip. Anything starting `utm_` is also dropped.
 const TRACKING_PARAMS: &[&str] = &[
-    "fbclid", "gclid", "gclsrc", "dclid", "gbraid", "wbraid", "msclkid", "yclid",
-    "mc_eid", "mc_cid", "igshid", "igsh", "twclid", "ttclid", "rb_clickid",
-    "s_cid", "vero_id", "oly_anon_id", "oly_enc_id", "_openstat", "wickedid",
-    "icid", "spm", "scm", "cmpid", "campaign_id", "ref_src", "ref_url",
+    "fbclid",
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "gbraid",
+    "wbraid",
+    "msclkid",
+    "yclid",
+    "mc_eid",
+    "mc_cid",
+    "igshid",
+    "igsh",
+    "twclid",
+    "ttclid",
+    "rb_clickid",
+    "s_cid",
+    "vero_id",
+    "oly_anon_id",
+    "oly_enc_id",
+    "_openstat",
+    "wickedid",
+    "icid",
+    "spm",
+    "scm",
+    "cmpid",
+    "campaign_id",
+    "ref_src",
+    "ref_url",
 ];
 
 fn is_tracking_key(k: &str) -> bool {
@@ -483,21 +546,25 @@ fn is_tracking_key(k: &str) -> bool {
 /// required to identify the content.
 pub(crate) fn canonicalize_site_url(raw: &str) -> Option<String> {
     let mut u = url::Url::parse(raw).ok()?;
-    let host = u.host_str()?.trim_start_matches("www.").to_ascii_lowercase();
+    let host = u
+        .host_str()?
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
     let path = u.path().to_string();
     let mut changed = false;
 
     if host == "roblox.com" {
         let mut parts = path.trim_start_matches('/').split('/');
         let is_game = parts.next() == Some("games")
-            && parts.next().is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
+            && parts
+                .next()
+                .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
         if is_game && (u.query().is_some() || u.fragment().is_some()) {
             u.set_query(None);
             u.set_fragment(None);
             changed = true;
         }
-    } else if (host == "youtube.com" && path == "/watch")
-        || (host == "youtu.be" && path.len() > 1)
+    } else if (host == "youtube.com" && path == "/watch") || (host == "youtu.be" && path.len() > 1)
     {
         // Keep only parameters that change what/where the user is watching.
         // Discovery provenance (`pp`, `feature`, `si`, etc.) is not content.
@@ -535,6 +602,7 @@ pub(crate) fn upgrade_https(raw: &str) -> Option<String> {
     }
     let host = u.host_str()?;
     if host == "localhost"
+        || host.ends_with(".localhost")
         || host.ends_with(".local")
         || host.ends_with(".onion")
         || host.parse::<std::net::IpAddr>().is_ok()
@@ -549,8 +617,10 @@ pub(crate) fn upgrade_https(raw: &str) -> Option<String> {
 /// nothing to strip.
 pub(crate) fn strip_tracking_params(raw: &str) -> Option<String> {
     let mut u = url::Url::parse(raw).ok()?;
-    let pairs: Vec<(String, String)> =
-        u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+    let pairs: Vec<(String, String)> = u
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
     if pairs.is_empty() {
         return None;
     }
@@ -633,7 +703,10 @@ mod tests {
         assert_eq!(host_of("https://a.b/c?d"), "a.b");
         assert_eq!(host_of("http://sub.example.com:8080/x"), "sub.example.com");
         assert_eq!(host_of("https://user:pw@example.com/x"), "example.com");
-        assert_eq!(host_of("wss://ws.example.com/socket#frag"), "ws.example.com");
+        assert_eq!(
+            host_of("wss://ws.example.com/socket#frag"),
+            "ws.example.com"
+        );
         assert_eq!(host_of("example.com/path"), "example.com");
         assert_eq!(host_of(""), "");
     }
@@ -662,6 +735,7 @@ mod tests {
         assert_eq!(upgrade_https("ftp://example.com/"), None);
         // Local + raw-IP targets are left alone
         assert_eq!(upgrade_https("http://localhost:3000/"), None);
+        assert_eq!(upgrade_https("http://tauri.localhost/newtab.html"), None);
         assert_eq!(upgrade_https("http://192.168.1.10/admin"), None);
         assert_eq!(upgrade_https("http://nas.local/"), None);
         assert_eq!(upgrade_https("http://site.onion/"), None);
@@ -690,13 +764,18 @@ mod tests {
             canonicalize_site_url("https://www.roblox.com/games/177052655/Twisted-Murderer?gameSetTypeId=100000000&position=41#top"),
             Some("https://www.roblox.com/games/177052655/Twisted-Murderer".into())
         );
-        assert_eq!(canonicalize_site_url("https://www.roblox.com/users/1/profile?x=1"), None);
+        assert_eq!(
+            canonicalize_site_url("https://www.roblox.com/users/1/profile?x=1"),
+            None
+        );
     }
 
     #[test]
     fn canonicalizes_youtube_without_losing_video_identity() {
         assert_eq!(
-            canonicalize_site_url("https://www.youtube.com/watch?v=abc123&pp=ygUEdGVzdA%3D%3D&feature=share&t=42"),
+            canonicalize_site_url(
+                "https://www.youtube.com/watch?v=abc123&pp=ygUEdGVzdA%3D%3D&feature=share&t=42"
+            ),
             Some("https://www.youtube.com/watch?v=abc123&t=42".into())
         );
     }

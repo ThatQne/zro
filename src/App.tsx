@@ -48,6 +48,15 @@ export default function App() {
   const [isMaximized, setIsMaximized] = useState(false);
   const [lockOpen, setLockOpen] = useState(false);
 
+  useEffect(() => {
+    if (!settings.customChromeCssEnabled || !settings.customChromeCss) return;
+    const style = document.createElement("style");
+    style.id = "zro-user-chrome";
+    style.textContent = settings.customChromeCss.slice(0, 65_536);
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, [settings.customChromeCssEnabled, settings.customChromeCss]);
+
   // Entering incognito requires the unlock EVERY time (Windows Hello or
   // passcode); exiting never does. Clicking the toolbar button while the
   // lock is showing dismisses it — same spot toggles it back off, no mouse
@@ -107,6 +116,10 @@ export default function App() {
   function handleCombo(combo: string) {
     const s = useBrowserStore.getState();
     switch (combo) {
+      case "disable-custom-css":
+        s.setSettings({ customChromeCssEnabled: false });
+        setPanel("settings");
+        break;
       // Root level, matching the sidebar's New Tab button (same tooltip, same
       // action) — a folder's own + is what puts a tab inside a folder.
       case "new-tab": s.createTab(undefined); break;
@@ -141,6 +154,7 @@ export default function App() {
       if (e.key === "F5") return "reload";
       if (!e.ctrlKey && !e.metaKey) return null;
       const k = e.key.toLowerCase();
+      if (k === "f12" && e.shiftKey) return "disable-custom-css";
       if (k === "t") return e.shiftKey ? "reopen-tab" : "new-tab";
       if (k === "n" && !e.shiftKey) return "new-tab";
       if (k === "w") return "close-tab";
@@ -327,7 +341,7 @@ export default function App() {
           const target = s.tabs.find((t) => t.id === s.activeTabId) ?? s.tabs[0];
           s.switchTab(target.id).catch(console.error);
         } else {
-          createTab("https://www.google.com").catch(console.error);
+          createTab().catch(console.error);
         }
       });
     };
@@ -365,6 +379,7 @@ export default function App() {
 
       {/* Single top row: logo · window drag · nav · URL · actions · window btns */}
       <div
+        data-zro="toolbar"
         className="flex items-center gap-1 drag-region"
         style={{
           height: BAR_H, padding: "0 6px 0 10px",

@@ -1,0 +1,87 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const source = readFileSync(resolve(__dirname, '../src-tauri/src/browser/arcade_core.js'), 'utf8');
+const context = { module: { exports: {} } };
+vm.runInNewContext(source, context);
+const { physics, tetris, factory, pool, poolStep, minerItems, minerUpgrades, achievementDefs } = context.module.exports;
+
+test('arcade core exits immediately on websites', () => {
+  const window = {};
+  vm.runInNewContext(source, { location: { href: 'https://example.com/' }, window });
+  assert.equal(window.__zroArcade, undefined);
+});
+
+test('circle solver is bounded, finite and clamps long frame gaps', () => {
+  const bodies = Array.from({ length: 36 }, (_, i) => ({ x: 180, y: 90, vx: i % 2 ? 200 : -200, vy: 0, r: 14 }));
+  for (let i = 0; i < 1200; i++) physics(bodies, 1 / 120, 360, 520, 850, .12, null, 12);
+  for (const b of bodies) {
+    assert.ok(Object.values(b).every(Number.isFinite));
+    assert.ok(b.x >= 26 && b.x <= 334 && b.y >= 26 && b.y <= 494);
+  }
+  const a = { x: 100, y: 100, vx: 10, vy: 10, r: 15 }, b = { ...a };
+  physics([a], 500, 360, 520); physics([b], 1 / 60, 360, 520); assert.deepEqual(a, b);
+});
+
+test('circle contacts fire once despite three stabilization passes', () => {
+  const a = { x: 100, y: 100, vx: 100, vy: 0, r: 15 }, b = { x: 125, y: 100, vx: -100, vy: 0, r: 15 };
+  let contacts = 0; physics([a, b], 1 / 120, 360, 520, 0, 1, () => contacts++);
+  assert.equal(contacts, 1); assert.ok(a.vx < 0 && b.vx > 0); assert.ok(b.x - a.x >= 30 - 1e-6);
+});
+
+test('blocks honors starting level, uses a seven-piece bag and clears rows', () => {
+  const game = tetris(() => .3, { startLevel: 6 }), types = [];
+  assert.equal(game.level(), 6);
+  for (let i = 0; i < 7; i++) { types.push(game.piece.type); game.spawn(); }
+  assert.equal(new Set(types).size, 7);
+  game.board[19].fill(1); game.board[19][9] = 0; game.piece = { matrix: [[1]], type: 1, x: 9, y: 0 };
+  assert.equal(game.drop(), 1); assert.equal(game.lines, 1); assert.equal(game.score, 638); assert.equal(game.board.length, 20);
+});
+
+test('blocks rejects movement after game over and keeps live methods on hydration', () => {
+  const game = tetris(); game.move(-1, 0); game.drop(); const saved = JSON.parse(JSON.stringify(game));
+  const restored = tetris();
+  for (const key of Object.keys(restored)) if (typeof restored[key] !== 'function' && Object.hasOwn(saved, key)) restored[key] = saved[key];
+  assert.equal(typeof restored.move, 'function'); assert.equal(restored.move(0, 1), true);
+  restored.board.forEach(row => row.fill(1)); restored.spawn(); assert.equal(restored.over, true);
+  assert.equal(restored.move(0, 1), false); assert.equal(restored.rotate(), false); assert.equal(restored.drop(), 0);
+});
+
+test('miner has clear item progression, upgrades and achievement multipliers', () => {
+  const game = factory(); assert.equal(minerItems.length, 5); assert.equal(minerUpgrades.length, 5); assert.equal(achievementDefs.length, 8);
+  const unlocked = game.tap(); assert.ok(unlocked.includes('first')); assert.equal(game.achievements.length, 1);
+  game.energy = game.total = 1000;
+  assert.equal(game.buy(0), true); assert.equal(game.items[0], 1);
+  const baseRate = game.rate(); assert.ok(baseRate > 1);
+  assert.equal(game.buyUpgrade('node2'), true); assert.ok(game.rate() > baseRate);
+  assert.equal(game.buy(4), false, 'locked tiers cannot be skipped');
+});
+
+test('miner restores exact state and caps offline production at eight hours', () => {
+  const game = factory({ energy: 12, total: 50, taps: 7, items: [2,0,0,0,0], upgrades: ['tap2'], achievements: ['first'], lastSaved: 123 });
+  assert.equal(game.energy, 12); assert.equal(game.items[0], 2); assert.equal(game.clickPower(), 2.2);
+  const before = game.energy, rate = game.rate(); game.tick(999999); assert.ok(Math.abs((game.energy - before) - rate * 28800) < 1e-6);
+});
+
+test('pool resolves collisions, pockets balls and restores a scratched cue', () => {
+  const game = pool(); assert.equal(game.balls.length, 16);
+  const cue = game.balls.find(b => b.cue), target = game.balls.find(b => !b.cue);
+  game.balls = [cue, target]; cue.x = 100; cue.y = 200; target.x = 119; target.y = 200; cue.vx = 300; target.vx = 0;
+  poolStep(game, 1/120); assert.ok(target.vx > 0);
+  target.x = 28; target.y = 28; target.vx = target.vy = 0; poolStep(game, 1/120);
+  assert.equal(game.score, 1); assert.equal(game.balls.some(b => b.id === target.id), false);
+  const liveCue = game.balls.find(b => b.cue); liveCue.x = 28; liveCue.y = 28; liveCue.vx = liveCue.vy = 0; poolStep(game, 1/120);
+  assert.ok(game.balls.some(b => b.cue)); assert.equal(game.score, 0);
+});
+
+test('arcade hibernation snapshots remain bounded and use version two', () => {
+  const capture = readFileSync(resolve(__dirname, '../src-tauri/src/browser/sleep_capture.js'), 'utf8');
+  const snapshot = vm.runInNewContext(capture, {
+    __zroNewTabDocument: true, location: { href: 'http://tauri.localhost/newtab.html' }, scrollX: 0, scrollY: 45,
+    __zroArcadeSave: () => ({ version: 2, selected: 'factory', games: { factory: JSON.parse(JSON.stringify(factory())) } }),
+  });
+  assert.equal(snapshot.arcade.version, 2); assert.equal(snapshot.y, 45);
+  assert.ok(Array.isArray(snapshot.forms) && Array.isArray(snapshot.scrollers)); assert.ok(JSON.stringify(snapshot).length < 32768);
+});

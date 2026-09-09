@@ -63,7 +63,9 @@ pub fn prefer_high_performance_gpu() {
         RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_SZ,
     };
 
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let exe_path = exe.to_string_lossy().to_string();
 
     unsafe {
@@ -75,7 +77,10 @@ pub fn prefer_high_performance_gpu() {
         }
         let name = HSTRING::from(exe_path);
         // "2" = high performance (discrete GPU); NUL-terminated UTF-16 for REG_SZ.
-        let data: Vec<u16> = "GpuPreference=2;".encode_utf16().chain(std::iter::once(0)).collect();
+        let data: Vec<u16> = "GpuPreference=2;"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let bytes = std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2);
         let _ = RegSetValueExW(hkey, &name, None, REG_SZ, Some(bytes));
         let _ = RegCloseKey(hkey);
@@ -198,7 +203,8 @@ pub async fn clear_site_data(
             }
             ("storage", false) => {
                 if let Some(wv) = super::active_webview(&app) {
-                    wv.eval(CLEAR_SITE_STORAGE_JS).map_err(|e: tauri::Error| e.to_string())?;
+                    wv.eval(CLEAR_SITE_STORAGE_JS)
+                        .map_err(|e: tauri::Error| e.to_string())?;
                 }
             }
             _ => {}
@@ -298,7 +304,9 @@ fn default_udf(app: &AppHandle) -> Option<std::path::PathBuf> {
 }
 
 async fn udf_size(app: &AppHandle) -> u64 {
-    let Some(udf) = default_udf(app) else { return 0 };
+    let Some(udf) = default_udf(app) else {
+        return 0;
+    };
     tokio::task::spawn_blocking(move || dir_size(&udf))
         .await
         .unwrap_or(0)
@@ -307,8 +315,7 @@ async fn udf_size(app: &AppHandle) -> u64 {
 #[cfg(windows)]
 async fn clear_default_cache(app: &AppHandle) -> Result<(), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE,
-        COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+        COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE, COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
     };
     // Through the always-alive UI webview — same profile as every
     // default-profile tab, works even with zero tabs open
@@ -379,7 +386,13 @@ fn session_path(app: &AppHandle, name: &str) -> Result<std::path::PathBuf, Strin
     // escape the data dir (path traversal via a crafted key).
     let slug: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -419,7 +432,9 @@ pub async fn set_password_autosave(app: AppHandle, enabled: bool) -> Result<(), 
     use windows_core::Interface;
 
     for (label, wv) in app.webviews() {
-        if label == "main" { continue; }
+        if label == "main" {
+            continue;
+        }
         let _ = wv.with_webview(move |pwv| unsafe {
             let controller = pwv.controller();
             if let Ok(core) = controller.CoreWebView2() {
@@ -450,10 +465,8 @@ pub async fn set_password_autosave(_app: AppHandle, _enabled: bool) -> Result<()
 #[cfg(windows)]
 #[tauri::command]
 pub async fn verify_identity(app: AppHandle, reason: String) -> Result<bool, String> {
+    use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier};
     use windows::Win32::Foundation::HWND;
-    use windows::Security::Credentials::UI::{
-        UserConsentVerificationResult, UserConsentVerifier,
-    };
     use windows::Win32::System::WinRT::{
         IUserConsentVerifierInterop, RoInitialize, RO_INIT_MULTITHREADED,
     };
@@ -505,12 +518,18 @@ pub struct DiskItem {
 }
 
 fn dir_size(path: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
     entries
         .flatten()
         .map(|e| {
             let Ok(meta) = e.metadata() else { return 0 };
-            if meta.is_dir() { dir_size(&e.path()) } else { meta.len() }
+            if meta.is_dir() {
+                dir_size(&e.path())
+            } else {
+                meta.len()
+            }
         })
         .sum()
 }
@@ -532,7 +551,10 @@ pub async fn get_disk_usage(app: tauri::AppHandle) -> Result<Vec<DiskItem>, Stri
         for base in [Some(&data), local.as_ref()].into_iter().flatten() {
             let udf = base.join("EBWebView");
             if udf.is_dir() {
-                out.push(DiskItem { name: "Browsing data (cache · cookies · storage)".into(), bytes: dir_size(&udf) });
+                out.push(DiskItem {
+                    name: "Browsing data (cache · cookies · storage)".into(),
+                    bytes: dir_size(&udf),
+                });
                 break;
             }
         }
@@ -552,14 +574,20 @@ pub async fn get_disk_usage(app: tauri::AppHandle) -> Result<Vec<DiskItem>, Stri
 
         let ext = data.join("extensions");
         if ext.is_dir() {
-            out.push(DiskItem { name: "Extensions".into(), bytes: dir_size(&ext) });
+            out.push(DiskItem {
+                name: "Extensions".into(),
+                bytes: dir_size(&ext),
+            });
         }
         for (file, label) in [
             ("ai_memory.json", "AI memory"),
             ("session_cookies.bin", "Session cookies"),
         ] {
             if let Ok(meta) = std::fs::metadata(data.join(file)) {
-                out.push(DiskItem { name: label.into(), bytes: meta.len() });
+                out.push(DiskItem {
+                    name: label.into(),
+                    bytes: meta.len(),
+                });
             }
         }
 
@@ -586,24 +614,34 @@ fn private_mb(pid: u32) -> u64 {
     };
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
-        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return 0 };
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return 0;
+        };
         let mut c = PROCESS_MEMORY_COUNTERS_EX::default();
         c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
         let ok = K32GetProcessMemoryInfo(h, &mut c as *mut _ as *mut PROCESS_MEMORY_COUNTERS, c.cb);
         let _ = CloseHandle(h);
-        if ok.as_bool() { c.PrivateUsage as u64 / 1024 / 1024 } else { 0 }
+        if ok.as_bool() {
+            c.PrivateUsage as u64 / 1024 / 1024
+        } else {
+            0
+        }
     }
 }
 
 #[cfg(not(windows))]
-fn private_mb(_pid: u32) -> u64 { 0 }
+fn private_mb(_pid: u32) -> u64 {
+    0
+}
 
 /// All msedgewebview2.exe processes in zro's own process tree. Walking parent
 /// links catches renderers (parented to the browser broker, which is parented
 /// to us) without counting other apps' webviews. Returns (pid, chromium
 /// process type from the command line — "renderer", "gpu-process", …).
 fn webview_pids(sys: &sysinfo::System) -> Vec<(u32, String)> {
-    let Ok(me) = sysinfo::get_current_pid() else { return vec![] };
+    let Ok(me) = sysinfo::get_current_pid() else {
+        return vec![];
+    };
     let mut ours: std::collections::HashSet<sysinfo::Pid> = std::collections::HashSet::new();
     ours.insert(me);
     // Two passes: broker (parent = zro) first, then its children.
@@ -621,13 +659,21 @@ fn webview_pids(sys: &sysinfo::System) -> Vec<(u32, String)> {
         .filter(|(child, proc)| {
             **child != me
                 && ours.contains(child)
-                && proc.name().to_string_lossy().to_ascii_lowercase().contains("webview2")
+                && proc
+                    .name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("webview2")
         })
         .map(|(child, proc)| {
             let kind = proc
                 .cmd()
                 .iter()
-                .find_map(|a| a.to_string_lossy().strip_prefix("--type=").map(String::from))
+                .find_map(|a| {
+                    a.to_string_lossy()
+                        .strip_prefix("--type=")
+                        .map(String::from)
+                })
                 .unwrap_or_else(|| "browser".into());
             (child.as_u32(), kind)
         })
@@ -690,25 +736,28 @@ pub struct ProcessBreakdown {
 /// page attribution.
 #[cfg(windows)]
 async fn webview_process_infos(app: &AppHandle) -> Vec<(u32, i32, Vec<String>)> {
+    use webview2_com::take_pwstr;
     use webview2_com::GetProcessExtendedInfosCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Environment13, ICoreWebView2ProcessExtendedInfoCollection, ICoreWebView2_2,
     };
-    use webview2_com::take_pwstr;
     use windows_core::Interface;
 
-    let Some(wv) = app.get_webview("main") else { return vec![] };
+    let Some(wv) = app.get_webview("main") else {
+        return vec![];
+    };
     let (tx, rx) = std::sync::mpsc::channel::<Vec<(u32, i32, Vec<String>)>>();
     let send_ok = wv.with_webview(move |pwv| unsafe {
-        let r = (|| -> windows_core::Result<()> {
-            let env = pwv
-                .controller()
-                .CoreWebView2()?
-                .cast::<ICoreWebView2_2>()?
-                .Environment()?;
-            let env13 = env.cast::<ICoreWebView2Environment13>()?;
-            let tx2 = tx.clone();
-            let handler = GetProcessExtendedInfosCompletedHandler::create(Box::new(
+        let r =
+            (|| -> windows_core::Result<()> {
+                let env = pwv
+                    .controller()
+                    .CoreWebView2()?
+                    .cast::<ICoreWebView2_2>()?
+                    .Environment()?;
+                let env13 = env.cast::<ICoreWebView2Environment13>()?;
+                let tx2 = tx.clone();
+                let handler = GetProcessExtendedInfosCompletedHandler::create(Box::new(
                 move |err: windows_core::Result<()>,
                       coll: Option<ICoreWebView2ProcessExtendedInfoCollection>| {
                     let mut out: Vec<(u32, i32, Vec<String>)> = Vec::new();
@@ -750,9 +799,9 @@ async fn webview_process_infos(app: &AppHandle) -> Vec<(u32, i32, Vec<String>)> 
                     Ok(())
                 },
             ));
-            env13.GetProcessExtendedInfos(&handler)?;
-            Ok(())
-        })();
+                env13.GetProcessExtendedInfos(&handler)?;
+                Ok(())
+            })();
         if r.is_err() {
             let _ = tx.send(vec![]);
         }
@@ -761,7 +810,8 @@ async fn webview_process_infos(app: &AppHandle) -> Vec<(u32, i32, Vec<String>)> 
         return vec![];
     }
     tokio::task::spawn_blocking(move || {
-        rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_default()
+        rx.recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap_or_default()
     })
     .await
     .unwrap_or_default()
@@ -802,7 +852,12 @@ pub async fn get_process_breakdown(app: AppHandle) -> Result<ProcessBreakdown, S
     let mut seen = std::collections::HashSet::new();
     for (pid, kind, sources) in com {
         seen.insert(pid);
-        procs.push(ProcRow { pid, kind: kind_name(kind).into(), mb: private_mb(pid), sources });
+        procs.push(ProcRow {
+            pid,
+            kind: kind_name(kind).into(),
+            mb: private_mb(pid),
+            sources,
+        });
     }
     for (pid, kind) in tree {
         if seen.insert(pid) {
@@ -812,7 +867,12 @@ pub async fn get_process_breakdown(app: AppHandle) -> Result<ProcessBreakdown, S
                 "crashpad-handler" => "crashpad".into(),
                 k => k.to_string(),
             };
-            procs.push(ProcRow { pid, kind, mb: private_mb(pid), sources: vec![] });
+            procs.push(ProcRow {
+                pid,
+                kind,
+                mb: private_mb(pid),
+                sources: vec![],
+            });
         }
     }
     procs.sort_by(|a, b| b.mb.cmp(&a.mb));

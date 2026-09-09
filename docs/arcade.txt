@@ -1,0 +1,70 @@
+LOCAL NEW-TAB ARCADE
+
+Reserved address: zro://newtab. It maps to a bundled app document so native
+messages have a standards-valid source URI; scripts return immediately on other
+pages. No external assets, network calls, packages, audio, or autoplay.
+
+Games: Blocks (Tetris-style), Cycle Miner (item/upgrade incremental game), Merge
+Drop (matching-circle physics), and Pool. No gambling mechanics. The page uses
+the app's Outfit typography, restrained blue accent, and inline SVG controls.
+Keyboard instructions and equivalent pointer buttons are provided. The logo can
+be dragged and flung; resizing returns it to its origin.
+
+Progress
+- All four games and Blocks settings are serialized as version 2 data.
+- The native host saves the state to arcade.json in zro's app-data directory, so
+  it survives new tabs, app restarts, and WebView hibernation.
+- Each game's update timestamp is merged independently, preventing an older tab
+  from replacing newer progress from another tab. Payloads are schema-filtered
+  and limited to 128 KiB before writing.
+- Cycle Miner grants saved offline production for at most 8 hours. Its hardware,
+  upgrades, totals, and achievements are restored exactly.
+
+Resource policy
+- Menu: no canvas, animation loop, or timer. Game data is retained, not rendered.
+- Only the selected game runs. Blur, hidden document, pagehide, and manual pause
+  cancel scheduled work. Returning requires Resume; no background catch-up.
+- Cycle Miner: one 1-second timeout after the first item, no animation frames.
+- Pool: frames only while balls move. Empty or settled Merge Drop has no frame
+  loop; dropping wakes it. A stable stack sleeps after 0.45s below a speed threshold.
+- Shared circle physics: fixed 120 Hz steps, elapsed time capped at 50 ms/frame;
+  rendering follows display refresh. At most 36 merge bodies, 16 pool balls, and
+  40 short-lived particles.
+- Logo: demand-driven animation, stops within 7 seconds or on blur.
+- Reduced-motion preference disables particles and row-clear flashes.
+- Hibernation uses the same versioned snapshot and restores paused, with canvas
+  and functions reconstructed. The native disk save is separate from the tab's
+  hibernation snapshot.
+
+Extending it
+arcade_core.js contains DOM-free primitives: clamp, physics, tetris, factory,
+pool, and poolStep.
+The reserved page receives window.__zroArcade. The physics function takes circle
+objects {x,y,r,vx,vy}, timestep, bounds, gravity, restitution, and optional contact
+callback. Do not mutate the body array from that callback; collect changes and
+apply after the step. Keep body counts bounded. new_tab.js owns rendering/input
+and the single animation loop. Add games through makeGame/select/update/draw;
+never introduce an independent perpetual loop. Keep snapshot values JSON-safe.
+
+Verification
+pnpm test:browser runs deterministic game, physics, snapshot, and browser policy
+tests. Optional: with Playwright resolvable (e.g. via NODE_PATH), run
+node scripts/arcade-ui.test.cjs. It uses installed Edge headlessly, exercises all
+four games, pointer/keyboard input, paused/idle timer counts, snapshot recreation,
+responsive layout, and asserts zero requests/errors. Screenshots are saved under
+src-tauri/target/arcade-qa, never in the shipped frontend assets.
+This Chromium test does not replace native WebView2 focus/switching stress tests.
+
+Startup regression: the old fragment-only about:blank route could skip both
+document-created scripts and normal completion events, and WebView2 messages
+from that nonstandard URI could panic wry's URI parser. The logical address now
+maps to newtab.html inside Tauri's local protocol. new_tab.rs still verifies the
+page's ready acknowledgement before restoring a sleep snapshot or completing
+loading. Cold/background creation, spare adoption, navigation, and SourceChanged
+all route through the same bounded, single-flight check. Failure ends the spinner
+with a retry title. The UI regression verifies first-load mount and idempotency.
+The local protocol is exempt from navigation rewriting: upgrading
+http://tauri.localhost to HTTPS can cancel the bundled page's initial load.
+All explicit navigation/history paths resolve zro://newtab to the shell's local
+origin. Transient about:blank events cannot replace a pending new-tab target;
+readiness retries that initial blank navigation once after ownership is known.

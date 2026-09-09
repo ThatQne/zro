@@ -28,25 +28,55 @@ pub async fn show_tab_menu(
     let n = ids.len();
     state.lock().unwrap().menu_ctx = ids;
 
-    let close_label = if n > 1 { format!("Close {n} Tabs") } else { "Close Tab".into() };
-    let dup_label = if n > 1 { format!("Duplicate {n} Tabs") } else { "Duplicate Tab".into() };
-    let copy_label = if n > 1 { format!("Copy {n} URLs") } else { "Copy URL".into() };
+    let close_label = if n > 1 {
+        format!("Close {n} Tabs")
+    } else {
+        "Close Tab".into()
+    };
+    let dup_label = if n > 1 {
+        format!("Duplicate {n} Tabs")
+    } else {
+        "Duplicate Tab".into()
+    };
+    let copy_label = if n > 1 {
+        format!("Copy {n} URLs")
+    } else {
+        "Copy URL".into()
+    };
 
     // Power: freeze (keep RAM, instant resume) vs hibernate (drop the whole
     // renderer, slow reload) vs keep-awake (exempt from every auto-sleep sweep).
-    let awake_label = if keep_awake { "Allow Sleeping" } else { "Keep Awake" };
+    let awake_label = if keep_awake {
+        "Allow Sleeping"
+    } else {
+        "Keep Awake"
+    };
     let power_sub = SubmenuBuilder::new(&app, "Power")
-        .item(&MenuItemBuilder::with_id("tab:freeze", "Freeze Now").build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("tab:hibernate", "Hibernate Now").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("tab:freeze", "Freeze Now")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("tab:hibernate", "Hibernate Now")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("tab:keep-awake", awake_label).build(&app).map_err(|e| e.to_string())?)
-        .build().map_err(|e| e.to_string())?;
+        .item(
+            &MenuItemBuilder::with_id("tab:keep-awake", awake_label)
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .build()
+        .map_err(|e| e.to_string())?;
 
     let mut folder_sub = SubmenuBuilder::new(&app, "Move to Folder");
     for f in &folders {
         folder_sub = folder_sub.item(
             &MenuItemBuilder::with_id(format!("tab:folder:{}", f.id), &f.name)
-                .build(&app).map_err(|e| e.to_string())?,
+                .build(&app)
+                .map_err(|e| e.to_string())?,
         );
     }
     if !folders.is_empty() {
@@ -54,17 +84,38 @@ pub async fn show_tab_menu(
     }
     folder_sub = folder_sub.item(
         &MenuItemBuilder::with_id("tab:folder:new", "New Folder…")
-            .build(&app).map_err(|e| e.to_string())?,
+            .build(&app)
+            .map_err(|e| e.to_string())?,
     );
     let folder_sub = folder_sub.build().map_err(|e| e.to_string())?;
 
     let mut menu = MenuBuilder::new(&app)
-        .item(&MenuItemBuilder::with_id("tab:close", close_label).build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("tab:close-others", "Close Other Tabs").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("tab:close", close_label)
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("tab:close-others", "Close Other Tabs")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("tab:duplicate", dup_label).build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("tab:copy-url", copy_label).build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("tab:reload", "Reload").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("tab:duplicate", dup_label)
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("tab:copy-url", copy_label)
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("tab:reload", "Reload")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .separator()
         .item(&power_sub)
         .item(&folder_sub);
@@ -72,7 +123,8 @@ pub async fn show_tab_menu(
     if in_folder {
         menu = menu.item(
             &MenuItemBuilder::with_id("tab:unfolder", "Remove from Folder")
-                .build(&app).map_err(|e| e.to_string())?,
+                .build(&app)
+                .map_err(|e| e.to_string())?,
         );
     }
 
@@ -96,12 +148,35 @@ pub async fn show_extension_menu(
     state.lock().unwrap().menu_ctx = vec![id];
 
     let menu = MenuBuilder::new(&app)
-        .item(&MenuItemBuilder::with_id("ext:manage", "Manage Extension…").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("ext:manage", "Manage Extension…")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("ext:toggle", if enabled { "Disable" } else { "Enable" }).build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("ext:pin", if pinned { "Unpin from Toolbar" } else { "Pin to Toolbar" }).build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("ext:toggle", if enabled { "Disable" } else { "Enable" })
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(
+                "ext:pin",
+                if pinned {
+                    "Unpin from Toolbar"
+                } else {
+                    "Pin to Toolbar"
+                },
+            )
+            .build(&app)
+            .map_err(|e| e.to_string())?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("ext:remove", "Remove from zro").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("ext:remove", "Remove from zro")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -128,7 +203,10 @@ pub fn show_page_menu_now(app: &AppHandle) {
 
         if !ctx.link.is_empty() {
             menu = menu
-                .item(&MenuItemBuilder::with_id("page:open-link", "Open Link in New Tab").build(app)?)
+                .item(
+                    &MenuItemBuilder::with_id("page:open-link", "Open Link in New Tab")
+                        .build(app)?,
+                )
                 .item(&MenuItemBuilder::with_id("page:copy-link", "Copy Link Address").build(app)?)
                 .separator();
         }
@@ -140,10 +218,16 @@ pub fn show_page_menu_now(app: &AppHandle) {
                 .item(&MenuItemBuilder::with_id("page:save-image:webp", "WebP").build(app)?)
                 .build()?;
             menu = menu
-                .item(&MenuItemBuilder::with_id("page:open-image", "Open Image in New Tab").build(app)?)
+                .item(
+                    &MenuItemBuilder::with_id("page:open-image", "Open Image in New Tab")
+                        .build(app)?,
+                )
                 .item(&save_sub)
                 .item(&MenuItemBuilder::with_id("page:copy-image-data", "Copy Image").build(app)?)
-                .item(&MenuItemBuilder::with_id("page:copy-image", "Copy Image Address").build(app)?)
+                .item(
+                    &MenuItemBuilder::with_id("page:copy-image", "Copy Image Address")
+                        .build(app)?,
+                )
                 .separator();
         }
 
@@ -196,7 +280,9 @@ pub async fn save_image_as(app: AppHandle, url: String, format: String) -> Resul
     };
 
     // Host-side fetch — no CORS / tainted-canvas limits (client JS can't do this).
-    let client = reqwest::Client::builder().build().map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| e.to_string())?;
     let bytes = client
         .get(&url)
         .send()
@@ -256,13 +342,33 @@ pub async fn show_folder_menu(
     state.lock().unwrap().menu_ctx = vec![id];
 
     let menu = MenuBuilder::new(&app)
-        .item(&MenuItemBuilder::with_id("folder:rename", "Rename").build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("folder:edit", "Edit Color & Icon…").build(&app).map_err(|e| e.to_string())?)
-        .item(&MenuItemBuilder::with_id("folder:open-all", "Open All Tabs").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("folder:rename", "Rename")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("folder:edit", "Edit Color & Icon…")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("folder:open-all", "Open All Tabs")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("folder:randomize", "Shuffle Style").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("folder:randomize", "Shuffle Style")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("folder:delete", "Delete Folder").build(&app).map_err(|e| e.to_string())?)
+        .item(
+            &MenuItemBuilder::with_id("folder:delete", "Delete Folder")
+                .build(&app)
+                .map_err(|e| e.to_string())?,
+        )
         .build()
         .map_err(|e| e.to_string())?;
 

@@ -23,7 +23,13 @@ pub struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Self { x: 44.0, y: 40.0, right_offset: 0.0, inset: CORNER_INSET, fullscreen: false }
+        Self {
+            x: 44.0,
+            y: 40.0,
+            right_offset: 0.0,
+            inset: CORNER_INSET,
+            fullscreen: false,
+        }
     }
 }
 
@@ -33,7 +39,9 @@ impl Default for Layout {
 // That single lookup silently broke resize, tab switching and Ctrl+T.
 pub(crate) fn compute_rect(main: &tauri::Window, l: Layout) -> Result<Rect, String> {
     let inner = main.inner_size().map_err(|e: tauri::Error| e.to_string())?;
-    let scale = main.scale_factor().map_err(|e: tauri::Error| e.to_string())?;
+    let scale = main
+        .scale_factor()
+        .map_err(|e: tauri::Error| e.to_string())?;
     if l.fullscreen {
         return Ok(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
@@ -181,7 +189,13 @@ pub async fn set_layout(
 ) -> Result<(), String> {
     {
         let mut s = state.lock().unwrap();
-        let next = Layout { x, y, right_offset, inset, fullscreen: s.layout.fullscreen };
+        let next = Layout {
+            x,
+            y,
+            right_offset,
+            inset,
+            fullscreen: s.layout.fullscreen,
+        };
         if next == s.layout {
             return Ok(()); // no change — skip the set_bounds churn
         }

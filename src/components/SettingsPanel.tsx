@@ -81,6 +81,10 @@ export default function SettingsPanel({ onClose }: Props) {
             <ToolbarGrid />
           </Card>
 
+          <Card icon={<LayoutGrid size={12} />} title="Custom UI CSS" defaultOpen={false}>
+            <ChromeCssEditor />
+          </Card>
+
           <Card icon={<Globe size={12} />} title="Default Browser">
             <DefaultBrowserSection />
           </Card>
@@ -90,6 +94,7 @@ export default function SettingsPanel({ onClose }: Props) {
           </Card>
 
           <Card icon={<Moon size={12} />} title="Performance" defaultOpen={false}>
+            <Hint>Adaptive scheduling uses available RAM, recent reuse, and measured reload cost. Memory pressure reduces background loading; protected state and pinned tabs are never forcibly unloaded.</Hint>
             <Label>Max awake background tabs</Label>
             <div style={{ display: "flex", gap: 4 }}>
               {([[2, "2"], [3, "3"], [5, "5"], [8, "8"], [0, "No cap"]] as const).map(([v, l]) => (
@@ -101,7 +106,15 @@ export default function SettingsPanel({ onClose }: Props) {
                 />
               ))}
             </div>
-            <Hint>The memory ceiling — extra tabs sleep instantly, so total RAM stays flat at hundreds of tabs.</Hint>
+            <Hint>Extra eligible tabs freeze after a short grace period. Media, pinned tabs and protected page state can exceed this target; it is not a hard RAM cap.</Hint>
+            <Label>Background loading slots</Label>
+            <div style={{ display: "flex", gap: 4 }}>
+              {([[0, "On click"], [1, "1"], [2, "2"], [3, "3"]] as const).map(([v, l]) => (
+                <Choice key={v} active={settings.backgroundLoadLimit === v}
+                  onClick={() => setSettings({ backgroundLoadLimit: v })} label={l} />
+              ))}
+            </div>
+            <Hint>New background links wait their turn while your current page loads. Clicking a queued tab opens it immediately.</Hint>
             <Label>Sleep inactive tabs after</Label>
             <div style={{ display: "flex", gap: 4 }}>
               {([[0, "Off"], [5, "5 min"], [10, "10 min"], [20, "20 min"]] as const).map(([v, l]) => (
@@ -113,7 +126,7 @@ export default function SettingsPanel({ onClose }: Props) {
                 />
               ))}
             </div>
-            <Hint>Background tabs freeze after a minute, then fully sleep after this. They wake on click; audio tabs never sleep.</Hint>
+            <Hint>Inactive tabs freeze first, then save supported page state and unload. Over-target tabs may unload after 5 minutes. Off disables automatic unloading, not freezing. Media and complex editors retain their renderer.</Hint>
             <Label>Freeze everything when idle for</Label>
             <div style={{ display: "flex", gap: 4 }}>
               {([[0, "Off"], [1, "1 min"], [3, "3 min"], [5, "5 min"]] as const).map(([v, l]) => (
@@ -125,7 +138,7 @@ export default function SettingsPanel({ onClose }: Props) {
                 />
               ))}
             </div>
-            <Hint>Idle machine → every tab freezes (active too), so nothing burns CPU overnight. Any input thaws it instantly.</Hint>
+            <Hint>Requests suspension while the machine is idle. Playing audio is protected; WebView2 may decline suspension. Input resumes the active page.</Hint>
           </Card>
 
           <Card icon={<Bot size={12} />} title="AI Assistant" defaultOpen={false}>
@@ -1123,6 +1136,30 @@ export function ClearDataSection() {
       )}
     </div>
   );
+}
+
+function ChromeCssEditor() {
+  const css = useBrowserStore(s => s.settings.customChromeCss);
+  const enabled = useBrowserStore(s => s.settings.customChromeCssEnabled);
+  const setSettings = useBrowserStore(s => s.setSettings);
+  const [draft, setDraft] = useState(css);
+  useEffect(() => setDraft(css), [css]);
+  return <>
+    <Hint>Styles zro's interface, not websites. Use trusted CSS only: it can hide controls or request external resources. Ctrl+Shift+F12 disables it even with a page focused.</Hint>
+    <textarea aria-label="Custom browser UI CSS" value={draft} maxLength={65_536}
+      onChange={e => setDraft(e.target.value)} spellCheck={false}
+      placeholder={'[data-zro="toolbar"] { background: #182133 !important; }'}
+      style={{ width: "100%", minHeight: 160, resize: "vertical", background: "#080808",
+        color: "#bbb", border: "1px solid #333", borderRadius: 4, padding: 8,
+        fontFamily: "monospace", fontSize: 11 }} />
+    <div style={{ display: "flex", gap: 4 }}>
+      <Choice active={enabled} label="Apply CSS" onClick={() => setSettings({ customChromeCss: draft, customChromeCssEnabled: true })} />
+      <Choice active={!enabled} label="Disable" onClick={() => setSettings({ customChromeCssEnabled: false })} />
+      <Choice active={false} label="Clear" onClick={() => {
+        setDraft(""); setSettings({ customChromeCss: "", customChromeCssEnabled: false });
+      }} />
+    </div>
+  </>;
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────

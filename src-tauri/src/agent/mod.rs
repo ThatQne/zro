@@ -77,7 +77,11 @@ pub async fn ask_ai(
     } else {
         format!(
             "\n\nPERSISTENT MEMORY (facts from past sessions — use them, don't re-ask):\n{}",
-            memories.iter().map(|m| format!("- {m}")).collect::<Vec<_>>().join("\n")
+            memories
+                .iter()
+                .map(|m| format!("- {m}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         )
     };
 
@@ -176,7 +180,11 @@ pub async fn ask_ai(
 }
 
 /// system + prior turns + current prompt (shared by both chat loops)
-pub(crate) fn build_messages(system: &str, history: &[serde_json::Value], prompt: &str) -> Vec<serde_json::Value> {
+pub(crate) fn build_messages(
+    system: &str,
+    history: &[serde_json::Value],
+    prompt: &str,
+) -> Vec<serde_json::Value> {
     let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
     for h in history {
         let role = h["role"].as_str().unwrap_or("");
@@ -201,7 +209,8 @@ pub(crate) const CTX_CHAR_BUDGET: usize = 60_000;
 /// Called before every round, so the request size is bounded no matter how
 /// many tool rounds or how big the pages read.
 pub(crate) fn compact_messages(messages: &mut Vec<serde_json::Value>, budget: usize) {
-    const STUB: &str = "[older tool result pruned to save context — re-run the tool if you still need it]";
+    const STUB: &str =
+        "[older tool result pruned to save context — re-run the tool if you still need it]";
     // Per-message overhead approximates role/ids/tool_calls JSON framing.
     fn size(m: &serde_json::Value) -> usize {
         m["content"].as_str().map(|s| s.len()).unwrap_or(0) + 128

@@ -15,7 +15,11 @@ pub async fn eval_with_result(app: &AppHandle, script: String) -> Result<String,
 }
 
 /// Run JS in a specific tab's webview (None = active tab).
-pub async fn eval_in(app: &AppHandle, target: Option<&str>, script: String) -> Result<String, String> {
+pub async fn eval_in(
+    app: &AppHandle,
+    target: Option<&str>,
+    script: String,
+) -> Result<String, String> {
     let wv = match target {
         // Through the label indirection — a warm-spare-adopted tab's webview
         // label is not its tab id
@@ -122,7 +126,8 @@ const CSS_PATH_FN: &str = r#"
 /// scroll state — without these the agent is blind to anything it must
 /// operate (e.g. a transactions-type filter dropdown + paged table).
 pub(crate) fn read_page_js() -> String {
-    format!(r#"
+    format!(
+        r#"
 (function(){{
   {CSS_PATH_FN}
   // Prefer the page's main-content region (Scrapling-style extraction) so the
@@ -161,14 +166,16 @@ pub(crate) fn read_page_js() -> String {
     text: t, text_truncated: total > 6000, full_text_length: full.length,
     controls: controls, pagination: pag
   }};
-}})()"#)
+}})()"#
+    )
 }
 
 /// find_text: substring search over the FULL page text (read_page truncates
 /// at 6k — long inboxes/threads/tables live past that). Returns match
 /// snippets with surrounding context plus the total hit count.
 pub(crate) fn find_text_js(query: &str) -> String {
-    format!(r#"
+    format!(
+        r#"
 (function(){{
   var q = {q};
   var t = document.body ? document.body.innerText : '';
@@ -189,13 +196,16 @@ pub(crate) fn find_text_js(query: &str) -> String {
   }}
   if (!total) return {{ ok: false, error: 'no matches', page_text_length: t.length }};
   return {{ matches: out, total: total, page_text_length: t.length }};
-}})()"#, q = js_str(query))
+}})()"#,
+        q = js_str(query)
+    )
 }
 
 /// find: locate visible interactive elements by their text — returns ready
 /// CSS selectors so the model never guesses them.
 pub(crate) fn find_js(query: &str) -> String {
-    format!(r#"
+    format!(
+        r#"
 (function(){{
   {CSS_PATH_FN}
   var q = {q}.toLowerCase();
@@ -217,12 +227,15 @@ pub(crate) fn find_js(query: &str) -> String {
     out.push(item);
   }}
   return out.length ? out : {{ ok: false, error: 'no visible element contains that text' }};
-}})()"#, q = js_str(query))
+}})()"#,
+        q = js_str(query)
+    )
 }
 
 /// select_option: native <select> value change with framework-safe events.
 pub(crate) fn select_option_js(selector: &str, value: &str) -> String {
-    format!(r#"
+    format!(
+        r#"
 (function(){{
   var el = document.querySelector({sel});
   if (!el) return {{ ok: false, error: 'no element matches selector' }};
@@ -241,7 +254,10 @@ pub(crate) fn select_option_js(selector: &str, value: &str) -> String {
   el.dispatchEvent(new Event('input',  {{ bubbles: true }}));
   el.dispatchEvent(new Event('change', {{ bubbles: true }}));
   return {{ ok: true, selected: hit.text.trim() }};
-}})()"#, sel = js_str(selector), val = js_str(value))
+}})()"#,
+        sel = js_str(selector),
+        val = js_str(value)
+    )
 }
 
 pub(crate) const GET_LINKS_JS: &str = r#"
@@ -260,7 +276,8 @@ pub(crate) const GET_LINKS_JS: &str = r#"
 /// pointer/mouse sequence — React/custom widgets listen to pointerdown or
 /// mousedown, not the bare click() call.
 pub(crate) fn click_js(selector: &str) -> String {
-    format!(r#"
+    format!(
+        r#"
 (function(){{
   var els = document.querySelectorAll({sel});
   if (!els.length) return {{ ok: false, error: 'no element matches selector' }};
@@ -284,7 +301,9 @@ pub(crate) fn click_js(selector: &str) -> String {
               text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 80) }};
   if (hidden) out.warning = 'all matches were invisible - clicked a hidden element, likely no effect';
   return out;
-}})()"#, sel = js_str(selector))
+}})()"#,
+        sel = js_str(selector)
+    )
 }
 
 /// Where the page is after a click settled — lets the model SEE whether the
@@ -293,7 +312,8 @@ pub(crate) const PAGE_AFTER_JS: &str =
     "(function(){ return { url: location.href, title: document.title }; })()";
 
 pub(crate) fn fill_js(selector: &str, value: &str) -> String {
-    format!(r#"
+    format!(
+        r#"
 (function(){{
   var el = document.querySelector({sel});
   if (!el) return {{ ok: false, error: 'no element matches selector' }};
@@ -304,7 +324,10 @@ pub(crate) fn fill_js(selector: &str, value: &str) -> String {
   el.dispatchEvent(new Event('input',  {{ bubbles: true }}));
   el.dispatchEvent(new Event('change', {{ bubbles: true }}));
   return {{ ok: true }};
-}})()"#, sel = js_str(selector), val = js_str(value))
+}})()"#,
+        sel = js_str(selector),
+        val = js_str(value)
+    )
 }
 
 pub(crate) fn scroll_js(direction: &str) -> String {
@@ -320,7 +343,10 @@ pub(crate) fn scroll_js(direction: &str) -> String {
 /// Page metadata for tab titles + real favicons. Works for background tabs
 /// via the optional id (active tab when omitted).
 #[tauri::command]
-pub async fn get_page_meta(app: AppHandle, id: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn get_page_meta(
+    app: AppHandle,
+    id: Option<String>,
+) -> Result<serde_json::Value, String> {
     const META_JS: &str = r#"
 (function(){
   var best = null, bestScore = -1;

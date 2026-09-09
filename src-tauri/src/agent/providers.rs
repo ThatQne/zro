@@ -1,12 +1,15 @@
 //! AI providers: ollama / OpenAI-compatible chat loops (streaming, with the
 //! in-page tool set) and the local mz-code agent binary.
 
-use std::time::Duration;
 use futures_util::StreamExt;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use super::tools::{is_parallel_safe, run_tool, tool_defs};
-use super::{build_messages, cancelled, compact_messages, emit_stopped, CTX_CHAR_BUDGET, MAX_TOOL_ROUNDS, OLLAMA};
+use super::{
+    build_messages, cancelled, compact_messages, emit_stopped, CTX_CHAR_BUDGET, MAX_TOOL_ROUNDS,
+    OLLAMA,
+};
 
 // ── Provider checks + model listing ──────────────────────────────────────────
 
@@ -55,7 +58,10 @@ pub async fn list_ollama_models(base_url: Option<String>) -> Result<Vec<String>,
 
 /// Models on an OpenAI-compatible endpoint (LM Studio, vLLM, llama.cpp, cloud).
 #[tauri::command]
-pub async fn list_openai_models(base_url: String, api_key: Option<String>) -> Result<Vec<String>, String> {
+pub async fn list_openai_models(
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
         .build()
@@ -113,7 +119,9 @@ fn clean_terminal_line(line: &str) -> String {
                     // CSI: consume until final byte @..~
                     while let Some(&n) = chars.peek() {
                         chars.next();
-                        if ('\u{40}'..='\u{7e}').contains(&n) { break; }
+                        if ('\u{40}'..='\u{7e}').contains(&n) {
+                            break;
+                        }
                     }
                 }
                 Some(']') => {
@@ -121,10 +129,14 @@ fn clean_terminal_line(line: &str) -> String {
                     // OSC: consume until BEL or ST
                     while let Some(&n) = chars.peek() {
                         chars.next();
-                        if n == '\u{07}' { break; }
+                        if n == '\u{07}' {
+                            break;
+                        }
                     }
                 }
-                _ => { chars.next(); }
+                _ => {
+                    chars.next();
+                }
             }
         } else {
             out.push(c);
@@ -159,18 +171,29 @@ pub(crate) async fn run_mzcode(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
-    let mut child = cmd.spawn().map_err(|e| format!("failed to launch mz: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to launch mz: {e}"))?;
     let stdout = child.stdout.take().ok_or("no stdout from mz")?;
     let mut lines = BufReader::new(stdout).lines();
 
-    let _ = app.emit("ai-tool", serde_json::json!({ "name": "mzcode", "args": {} }));
+    let _ = app.emit(
+        "ai-tool",
+        serde_json::json!({ "name": "mzcode", "args": {} }),
+    );
 
     let mut was_cancelled = false;
     let stream = async {
         while let Ok(Some(line)) = lines.next_line().await {
-            if cancelled(app) { was_cancelled = true; break; }
+            if cancelled(app) {
+                was_cancelled = true;
+                break;
+            }
             let text = clean_terminal_line(&line);
-            let _ = app.emit("ai-token", serde_json::json!({ "token": format!("{text}\n") }));
+            let _ = app.emit(
+                "ai-token",
+                serde_json::json!({ "token": format!("{text}\n") }),
+            );
         }
     };
 
@@ -179,10 +202,15 @@ pub(crate) async fn run_mzcode(
             let _ = child.kill().await;
             let _ = app.emit("ai-token", serde_json::json!({ "token": "\n[stopped]" }));
         }
-        Ok(()) => { let _ = child.wait().await; }
+        Ok(()) => {
+            let _ = child.wait().await;
+        }
         Err(_) => {
             let _ = child.kill().await;
-            let _ = app.emit("ai-token", serde_json::json!({ "token": "\n[mz timed out after 5 min]" }));
+            let _ = app.emit(
+                "ai-token",
+                serde_json::json!({ "token": "\n[mz timed out after 5 min]" }),
+            );
         }
     }
 
@@ -210,7 +238,10 @@ pub(crate) async fn run_openai_loop(
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     for _round in 0..MAX_TOOL_ROUNDS {
-        if cancelled(app) { emit_stopped(app); return Ok(()); }
+        if cancelled(app) {
+            emit_stopped(app);
+            return Ok(());
+        }
         compact_messages(&mut messages, CTX_CHAR_BUDGET);
         let body = serde_json::json!({
             "model": model,
@@ -235,15 +266,22 @@ pub(crate) async fn run_openai_loop(
         let mut stream = resp.bytes_stream();
 
         'outer: while let Some(chunk) = stream.next().await {
-            if cancelled(app) { emit_stopped(app); return Ok(()); }
+            if cancelled(app) {
+                emit_stopped(app);
+                return Ok(());
+            }
             let chunk = chunk.map_err(|e| e.to_string())?;
             buf.push_str(&String::from_utf8_lossy(&chunk));
             while let Some(nl) = buf.find('\n') {
                 let line = buf[..nl].trim().to_string();
                 buf.drain(..=nl);
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
-                if data == "[DONE]" { break 'outer; }
+                if data == "[DONE]" {
+                    break 'outer;
+                }
                 let v: serde_json::Value = match serde_json::from_str(data) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -261,9 +299,15 @@ pub(crate) async fn run_openai_loop(
                         while calls.len() <= idx {
                             calls.push((String::new(), String::new(), String::new()));
                         }
-                        if let Some(id) = tc["id"].as_str() { calls[idx].0 = id.to_string(); }
-                        if let Some(n) = tc["function"]["name"].as_str() { calls[idx].1.push_str(n); }
-                        if let Some(a) = tc["function"]["arguments"].as_str() { calls[idx].2.push_str(a); }
+                        if let Some(id) = tc["id"].as_str() {
+                            calls[idx].0 = id.to_string();
+                        }
+                        if let Some(n) = tc["function"]["name"].as_str() {
+                            calls[idx].1.push_str(n);
+                        }
+                        if let Some(a) = tc["function"]["arguments"].as_str() {
+                            calls[idx].2.push_str(a);
+                        }
                     }
                 }
             }
@@ -298,12 +342,17 @@ pub(crate) async fn run_openai_loop(
         // Side-effect-free tools (searches, url fetches, memory lookups) run
         // concurrently when the model batches them; page tools stay sequential.
         if parsed.len() > 1 && parsed.iter().all(|(_, n, _)| is_parallel_safe(n)) {
-            if cancelled(app) { emit_stopped(app); return Ok(()); }
+            if cancelled(app) {
+                emit_stopped(app);
+                return Ok(());
+            }
             for (_, name, args) in &parsed {
                 let _ = app.emit("ai-tool", serde_json::json!({ "name": name, "args": args }));
             }
             let results = futures_util::future::join_all(
-                parsed.iter().map(|(_, name, args)| run_tool(app, name, args)),
+                parsed
+                    .iter()
+                    .map(|(_, name, args)| run_tool(app, name, args)),
             )
             .await;
             for ((id, _, _), result) in parsed.iter().zip(results) {
@@ -313,7 +362,10 @@ pub(crate) async fn run_openai_loop(
             }
         } else {
             for (id, name, args) in &parsed {
-                if cancelled(app) { emit_stopped(app); return Ok(()); }
+                if cancelled(app) {
+                    emit_stopped(app);
+                    return Ok(());
+                }
                 let _ = app.emit("ai-tool", serde_json::json!({ "name": name, "args": args }));
                 let result = run_tool(app, name, args).await;
                 messages.push(serde_json::json!({
@@ -323,7 +375,10 @@ pub(crate) async fn run_openai_loop(
         }
     }
 
-    let _ = app.emit("ai-token", serde_json::json!({ "token": "\n[stopped: tool-call limit reached]" }));
+    let _ = app.emit(
+        "ai-token",
+        serde_json::json!({ "token": "\n[stopped: tool-call limit reached]" }),
+    );
     let _ = app.emit("ai-done", serde_json::json!({}));
     Ok(())
 }
@@ -346,7 +401,10 @@ pub(crate) async fn run_ollama_loop(
         .map_err(|e| e.to_string())?;
 
     for _round in 0..MAX_TOOL_ROUNDS {
-        if cancelled(app) { emit_stopped(app); return Ok(()); }
+        if cancelled(app) {
+            emit_stopped(app);
+            return Ok(());
+        }
         compact_messages(&mut messages, CTX_CHAR_BUDGET);
         let body = serde_json::json!({
             "model": model,
@@ -372,14 +430,19 @@ pub(crate) async fn run_ollama_loop(
         let mut stream = resp.bytes_stream();
 
         'outer: while let Some(chunk) = stream.next().await {
-            if cancelled(app) { emit_stopped(app); return Ok(()); }
+            if cancelled(app) {
+                emit_stopped(app);
+                return Ok(());
+            }
             let chunk = chunk.map_err(|e| e.to_string())?;
             buf.push_str(&String::from_utf8_lossy(&chunk));
             // NDJSON — process complete lines, keep remainder in buf
             while let Some(nl) = buf.find('\n') {
                 let line = buf[..nl].trim().to_string();
                 buf.drain(..=nl);
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
                 let v: serde_json::Value = match serde_json::from_str(&line) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -413,12 +476,18 @@ pub(crate) async fn run_ollama_loop(
                 .iter()
                 .all(|tc| is_parallel_safe(tc["function"]["name"].as_str().unwrap_or("")));
         if all_safe {
-            if cancelled(app) { emit_stopped(app); return Ok(()); }
+            if cancelled(app) {
+                emit_stopped(app);
+                return Ok(());
+            }
             for tc in &tool_calls {
-                let _ = app.emit("ai-tool", serde_json::json!({
-                    "name": tc["function"]["name"].as_str().unwrap_or(""),
-                    "args": tc["function"]["arguments"],
-                }));
+                let _ = app.emit(
+                    "ai-tool",
+                    serde_json::json!({
+                        "name": tc["function"]["name"].as_str().unwrap_or(""),
+                        "args": tc["function"]["arguments"],
+                    }),
+                );
             }
             let results = futures_util::future::join_all(tool_calls.iter().map(|tc| {
                 run_tool(
@@ -433,7 +502,10 @@ pub(crate) async fn run_ollama_loop(
             }
         } else {
             for tc in &tool_calls {
-                if cancelled(app) { emit_stopped(app); return Ok(()); }
+                if cancelled(app) {
+                    emit_stopped(app);
+                    return Ok(());
+                }
                 let name = tc["function"]["name"].as_str().unwrap_or("");
                 let args = &tc["function"]["arguments"];
                 let _ = app.emit("ai-tool", serde_json::json!({ "name": name, "args": args }));
@@ -443,7 +515,10 @@ pub(crate) async fn run_ollama_loop(
         }
     }
 
-    let _ = app.emit("ai-token", serde_json::json!({ "token": "\n[stopped: tool-call limit reached]" }));
+    let _ = app.emit(
+        "ai-token",
+        serde_json::json!({ "token": "\n[stopped: tool-call limit reached]" }),
+    );
     let _ = app.emit("ai-done", serde_json::json!({}));
     Ok(())
 }

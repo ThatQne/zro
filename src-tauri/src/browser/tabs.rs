@@ -2,7 +2,9 @@
 //! switching (park + hide), closing, navigation and back/forward history.
 
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl,
+};
 
 use super::downloads::handle_download;
 use super::layout::{compute_rect, parked_rect, sync_bounds};
@@ -37,12 +39,9 @@ fn shell_open_detached(uri: &str) {
 /// browser-style background-tab gesture.
 #[cfg(windows)]
 fn background_tab_gesture() -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_CONTROL, VK_MBUTTON,
-    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_MBUTTON};
     unsafe {
-        GetAsyncKeyState(VK_MBUTTON.0 as i32) < 0
-            || GetAsyncKeyState(VK_CONTROL.0 as i32) < 0
+        GetAsyncKeyState(VK_MBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_CONTROL.0 as i32) < 0
     }
 }
 
@@ -61,23 +60,36 @@ pub(crate) struct TabHistory {
 
 impl TabHistory {
     fn new(url: String) -> Self {
-        Self { urls: vec![url], current: 0, skip_next: false }
+        Self {
+            urls: vec![url],
+            current: 0,
+            skip_next: false,
+        }
     }
     fn push(&mut self, url: String) {
-        if self.skip_next { self.skip_next = false; return; }
-        if self.urls.last().map(|u| u == &url).unwrap_or(false) { return; }
+        if self.skip_next {
+            self.skip_next = false;
+            return;
+        }
+        if self.urls.last().map(|u| u == &url).unwrap_or(false) {
+            return;
+        }
         self.urls.truncate(self.current + 1);
         self.urls.push(url);
         self.current = self.urls.len() - 1;
     }
     fn back(&mut self) -> Option<String> {
-        if self.current == 0 { return None; }
+        if self.current == 0 {
+            return None;
+        }
         self.current -= 1;
         self.skip_next = true;
         Some(self.urls[self.current].clone())
     }
     fn forward(&mut self) -> Option<String> {
-        if self.current + 1 >= self.urls.len() { return None; }
+        if self.current + 1 >= self.urls.len() {
+            return None;
+        }
         self.current += 1;
         self.skip_next = true;
         Some(self.urls[self.current].clone())
@@ -87,6 +99,7 @@ impl TabHistory {
 /// Navigate the active tab's webview (used by the AI agent).
 pub(crate) fn navigate_wv(app: &AppHandle, url: &str) -> Result<(), String> {
     let parsed = url.parse::<url::Url>().map_err(|e| e.to_string())?;
+    let parsed = super::new_tab::navigation_url(app, parsed)?;
     match active_webview(app) {
         Some(wv) => wv.navigate(parsed).map_err(|e: tauri::Error| e.to_string()),
         None => Err("no active tab".into()),
@@ -113,7 +126,12 @@ pub(crate) fn suspend_webview(app: &AppHandle, label: &str, wv: &tauri::Webview)
 /// video is exactly "no mouse, no keyboard", so 3 idle minutes in, the
 /// watchdog hid the visible webview and the window turned see-through.
 #[cfg(windows)]
-pub(crate) fn suspend_webview_hiding(app: &AppHandle, label: &str, wv: &tauri::Webview, hide_first: bool) {
+pub(crate) fn suspend_webview_hiding(
+    app: &AppHandle,
+    label: &str,
+    wv: &tauri::Webview,
+    hide_first: bool,
+) {
     suspend_webview_covering(app, label, wv, hide_first, false);
 }
 
@@ -123,8 +141,9 @@ pub(crate) fn suspend_webview_hiding(app: &AppHandle, label: &str, wv: &tauri::W
 /// that gap froze the tab mid-album. Any audio-state change stamps this map;
 /// a webview audible within the grace window is treated as still playing.
 #[cfg(windows)]
-static LAST_AUDIBLE: std::sync::LazyLock<Mutex<std::collections::HashMap<String, std::time::Instant>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+static LAST_AUDIBLE: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 #[cfg(windows)]
 const AUDIBLE_GRACE: std::time::Duration = std::time::Duration::from_secs(90);
 
@@ -176,16 +195,24 @@ pub(crate) fn suspend_webview_covering(
     let _ = wv.with_webview(move |pwv| unsafe {
         // The UI may have restored/switched tabs since this work was queued.
         // Never apply a stale background/minimize hide to an active page.
-        if hide_first && !MINIMIZED.load(std::sync::atomic::Ordering::SeqCst)
-            && !IDLE_ACTIVE_FROZEN.load(std::sync::atomic::Ordering::SeqCst) {
+        if hide_first
+            && !MINIMIZED.load(std::sync::atomic::Ordering::SeqCst)
+            && !IDLE_ACTIVE_FROZEN.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let state = app.state::<Mutex<BrowserState>>();
             let s = state.lock().unwrap();
-            if s.active_tab_id.as_ref().map(|id| s.labels.get(id).unwrap_or(id)) == Some(&label) {
+            if s.active_tab_id
+                .as_ref()
+                .map(|id| s.labels.get(id).unwrap_or(id))
+                == Some(&label)
+            {
                 return;
             }
         }
         let controller = pwv.controller();
-        let Ok(core) = controller.CoreWebView2() else { return };
+        let Ok(core) = controller.CoreWebView2() else {
+            return;
+        };
         if let Ok(wv8) = core.cast::<ICoreWebView2_8>() {
             let mut playing = windows_core::BOOL::default();
             let _ = wv8.IsDocumentPlayingAudio(&mut playing);
@@ -207,7 +234,9 @@ pub(crate) fn suspend_webview_covering(
         if let Ok(wv19) = core.cast::<ICoreWebView2_19>() {
             let _ = wv19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
         }
-        let Ok(wv3) = core.cast::<ICoreWebView2_3>() else { return };
+        let Ok(wv3) = core.cast::<ICoreWebView2_3>() else {
+            return;
+        };
         let mut already = windows_core::BOOL::default();
         if wv3.IsSuspended(&mut already).is_ok() && already.as_bool() {
             return;
@@ -244,7 +273,9 @@ pub(crate) fn resume_webview(app: &AppHandle, label: &str, wv: &tauri::Webview) 
         s.page_hidden = false;
     }
     let _ = wv.with_webview(|pwv| unsafe {
-        let Ok(core) = pwv.controller().CoreWebView2() else { return };
+        let Ok(core) = pwv.controller().CoreWebView2() else {
+            return;
+        };
         if let Ok(wv3) = core.cast::<ICoreWebView2_3>() {
             let mut sus = windows_core::BOOL::default();
             if wv3.IsSuspended(&mut sus).is_ok() && sus.as_bool() {
@@ -288,7 +319,13 @@ pub(crate) fn shed_memory(wv: &tauri::Webview) {
 #[cfg(not(windows))]
 pub(crate) fn suspend_webview(_app: &AppHandle, _label: &str, _wv: &tauri::Webview) {}
 #[cfg(not(windows))]
-pub(crate) fn suspend_webview_hiding(_app: &AppHandle, _label: &str, _wv: &tauri::Webview, _hide: bool) {}
+pub(crate) fn suspend_webview_hiding(
+    _app: &AppHandle,
+    _label: &str,
+    _wv: &tauri::Webview,
+    _hide: bool,
+) {
+}
 #[cfg(not(windows))]
 pub(crate) fn resume_webview(_app: &AppHandle, _label: &str, _wv: &tauri::Webview) {}
 #[cfg(not(windows))]
@@ -375,7 +412,9 @@ pub(crate) fn thaw_active_tab(app: &AppHandle) {
         (s.active_tab_id.clone(), s.layout)
     };
     let Some(id) = id else { return };
-    let Some(wv) = crate::browser::tab_webview(app, &id) else { return };
+    let Some(wv) = crate::browser::tab_webview(app, &id) else {
+        return;
+    };
     resume_webview(app, &crate::browser::tab_label(app, &id), &wv);
     if let Some(main) = app.get_window("main") {
         if let Ok(rect) = compute_rect(&main, layout) {
@@ -399,7 +438,8 @@ static IDLE_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// The ACTIVE tab froze too (long-idle stage). Separate flag so the visible
 /// page only ever blanks after a genuinely long absence, never mid-reading.
 #[cfg(windows)]
-static IDLE_ACTIVE_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static IDLE_ACTIVE_FROZEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// Idle threshold in ms; frontend Performance setting can retune it. 0 = off.
 #[cfg(windows)]
 static IDLE_FREEZE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(180_000);
@@ -436,7 +476,7 @@ pub fn set_idle_freeze_min(minutes: u64) {
 }
 
 #[cfg(windows)]
-fn system_idle_ms() -> u64 {
+pub(crate) fn system_idle_ms() -> u64 {
     use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     unsafe {
@@ -480,8 +520,12 @@ fn freeze_background_pages(app: &AppHandle) {
 #[cfg(windows)]
 fn freeze_active_page(app: &AppHandle) {
     let state = app.state::<Mutex<BrowserState>>();
-    let Some(id) = state.lock().unwrap().active_tab_id.clone() else { return };
-    let Some(wv) = crate::browser::tab_webview(app, &id) else { return };
+    let Some(id) = state.lock().unwrap().active_tab_id.clone() else {
+        return;
+    };
+    let Some(wv) = crate::browser::tab_webview(app, &id) else {
+        return;
+    };
     let label = crate::browser::tab_label(app, &id);
     // cover_hole: the window may still be on screen — solidify the region so
     // the hidden page never reads as a transparent window
@@ -510,7 +554,8 @@ pub(crate) fn idle_watch(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            let any_frozen = IDLE_FROZEN.load(Ordering::SeqCst) || IDLE_ACTIVE_FROZEN.load(Ordering::SeqCst);
+            let any_frozen =
+                IDLE_FROZEN.load(Ordering::SeqCst) || IDLE_ACTIVE_FROZEN.load(Ordering::SeqCst);
             // Poll fast while frozen (first input thaws in ~3s); a lean 6s
             // otherwise — checking foreground + last-input is nearly free.
             let nap = if any_frozen { 3 } else { 6 };
@@ -564,8 +609,8 @@ pub(crate) fn idle_watch(app: &AppHandle) {
 #[cfg(not(windows))]
 pub(crate) fn idle_watch(_app: &AppHandle) {}
 
-/// Frontend sweep target: freeze one background tab's renderer (state kept,
-/// RAM released). The active tab never freezes.
+/// Confirm actual suspension to the scheduler, rather than reporting success
+/// merely because TrySuspend was queued. Audio/visibility refusals are normal.
 #[tauri::command]
 pub async fn suspend_tab(
     app: AppHandle,
@@ -580,8 +625,85 @@ pub async fn suspend_tab(
         s.labels.get(&id).cloned().unwrap_or_else(|| id.clone())
     };
     let wv = app.get_webview(&label).ok_or("no webview")?;
-    suspend_webview(&app, &label, &wv);
-    Ok(())
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_3, ICoreWebView2_8};
+        use windows_core::Interface;
+        if recently_audible(&label) {
+            return Err("recent audio playback".into());
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        wv.with_webview(move |pwv| unsafe {
+            let setup = (|| -> Result<_, String> {
+                let s = app.state::<Mutex<BrowserState>>();
+                let s = s.lock().unwrap();
+                if s.active_tab_id.as_deref() == Some(&id) {
+                    return Err("tab became active".into());
+                }
+                drop(s);
+                let core = pwv.controller().CoreWebView2().map_err(|e| e.to_string())?;
+                if let Ok(audio) = core.cast::<ICoreWebView2_8>() {
+                    let mut playing = windows_core::BOOL::default();
+                    audio
+                        .IsDocumentPlayingAudio(&mut playing)
+                        .map_err(|e| e.to_string())?;
+                    if playing.as_bool() {
+                        return Err("audio playback".into());
+                    }
+                }
+                core.cast::<ICoreWebView2_3>().map_err(|e| e.to_string())
+            })();
+            let core = match setup {
+                Ok(core) => core,
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                    return;
+                }
+            };
+            let mut already = windows_core::BOOL::default();
+            if core.IsSuspended(&mut already).is_ok() && already.as_bool() {
+                let _ = tx.send(Ok(()));
+                return;
+            }
+            let mut tx = Some(tx);
+            let resume_core = core.clone();
+            let handler =
+                webview2_com::TrySuspendCompletedHandler::create(Box::new(move |err, ok| {
+                    let result = if err.is_ok() && ok {
+                        let state = app.state::<Mutex<BrowserState>>();
+                        let mut s = state.lock().unwrap();
+                        if s.active_tab_id.as_deref() == Some(&id) {
+                            drop(s);
+                            // Activation won while the completion was pending.
+                            let _ = resume_core.Resume();
+                            Err("tab became active".into())
+                        } else if s.labels.get(&id) != Some(&label) {
+                            Err("tab closed or replaced".into())
+                        } else {
+                            s.suspended.insert(label.clone());
+                            Ok(())
+                        }
+                    } else {
+                        Err("renderer declined suspension".into())
+                    };
+                    if let Some(tx) = tx.take() {
+                        let _ = tx.send(result);
+                    }
+                    Ok(())
+                }));
+            let _ = core.TrySuspend(&handler);
+        })
+        .map_err(|e| e.to_string())?;
+        return tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .map_err(|_| "suspension timed out".to_string())?
+            .map_err(|_| "suspension unavailable".to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = wv;
+        Err("suspension unavailable".into())
+    }
 }
 
 // ── WebView2 configuration (autofill, shortcut interception) ─────────────────
@@ -597,14 +719,14 @@ pub async fn suspend_tab(
 #[cfg(windows)]
 fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
     use webview2_com::take_pwstr;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile6, ICoreWebView2_13, ICoreWebView2_18, ICoreWebView2_8,
+        COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+    };
     use webview2_com::{
         AcceleratorKeyPressedEventHandler, ContainsFullScreenElementChangedEventHandler,
         DocumentTitleChangedEventHandler, IsDocumentPlayingAudioChangedEventHandler,
         IsMutedChangedEventHandler, SourceChangedEventHandler,
-    };
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Profile6, ICoreWebView2_13, ICoreWebView2_18, ICoreWebView2_8,
-        COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
     };
     use windows_core::{Interface, BOOL, PWSTR};
 
@@ -614,13 +736,16 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
         let controller = pwv.controller();
         if let Ok(core) = controller.CoreWebView2() {
             let app_links = app.clone();
+            let message_label = id.clone();
             let handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
                 if let Some(args) = args {
                     let mut message = PWSTR::null();
                     if args.TryGetWebMessageAsString(&mut message).is_ok() {
                         let text = take_pwstr(message);
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if value["type"] == "zro-background-link" {
+                            if crate::browser::new_tab::handle_message(&app_links, &message_label, &value) {
+                                return Ok(());
+                            } else if value["type"] == "zro-background-link" {
                                 if let Some(url) = value["url"].as_str().and_then(|u| url::Url::parse(u).ok()) {
                                     if matches!(url.scheme(), "http" | "https") {
                                         let _ = app_links.emit("open-url", serde_json::json!({ "url": url.as_str(), "background": true }));
@@ -916,6 +1041,7 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                 let top_url_wr = top_url.clone();
                 let wr_handler = WebResourceRequestedEventHandler::create(Box::new(
                     move |sender, args| {
+                        let _timing = super::resources::span("request-callback");
                         let Some(args) = args else { return Ok(()) };
                         let Ok(req) = args.Request() else { return Ok(()) };
                         let mut uri = PWSTR::null();
@@ -1012,6 +1138,11 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             return Ok(());
                         }
                         let url = take_pwstr(uri);
+                        // The bundled page is served by Tauri's local protocol,
+                        // not an internet host. Never rewrite that protocol.
+                        if super::new_tab::is_document_url(&url) {
+                            return Ok(());
+                        }
                         if let Some(clean) = crate::browser::shields::rewrite_navigation(&url) {
                             let _ = args.SetCancel(true);
                             if let Some(core) = &sender {
@@ -1045,12 +1176,33 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                 if let Some(core) = sender {
                     let mut uri = PWSTR::null();
                     if core.Source(&mut uri).is_ok() {
-                        let url = take_pwstr(uri);
-                        if !url.is_empty() {
+                        let source_url = take_pwstr(uri);
+                        if !source_url.is_empty() {
+                            let url = if super::new_tab::is_document_url(&source_url) {
+                                super::new_tab::URL.to_string()
+                            } else {
+                                source_url
+                            };
                             // Refresh the Shields first-party cache (always, even
                             // for an unadopted spare) before the tab-scoped emit.
                             *top_url_src.lock().unwrap() = url.clone();
                             if let Some(tab_id) = crate::browser::tab_of_label(&app_src, &id_src) {
+                                if url == "about:blank" && app_src.state::<Mutex<BrowserState>>()
+                                    .lock().unwrap().tabs.get(&tab_id)
+                                    .is_some_and(|tab| tab.url == super::new_tab::URL) {
+                                    return Ok(());
+                                }
+                                if url == super::new_tab::URL {
+                                    // App asset URLs are an implementation
+                                    // detail; keep the stable logical URL in
+                                    // tab state and frontend events.
+                                    {
+                                        let state = app_src.state::<Mutex<BrowserState>>();
+                                        let mut s = state.lock().unwrap();
+                                        if let Some(tab) = s.tabs.get_mut(&tab_id) { tab.url = url.clone(); }
+                                    }
+                                    super::new_tab::ensure_ready(&app_src, &tab_id);
+                                }
                                 let _ = app_src.emit("page-navigated", serde_json::json!({ "id": tab_id, "url": url }));
                             }
                         }
@@ -1243,6 +1395,7 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
             if !ctrl { return Ok(()); }
 
             let combo = match (vk, shift) {
+                (0x7B, true) => Some("disable-custom-css"), // Ctrl+Shift+F12: recovery
                 (0x54, false) => Some("new-tab"),        // Ctrl+T
                 (0x54, true)  => Some("reopen-tab"),     // Ctrl+Shift+T
                 (0x4E, false) => Some("new-tab"),        // Ctrl+N
@@ -1301,7 +1454,9 @@ fn profile_dir(app: &AppHandle, profile: &str) -> Option<std::path::PathBuf> {
 /// Sign-in flows that must open as a REAL popup window even without explicit
 /// size — the opener page waits for a postMessage from it.
 fn is_auth_url(url: &str) -> bool {
-    let Ok(u) = url.parse::<url::Url>() else { return false };
+    let Ok(u) = url.parse::<url::Url>() else {
+        return false;
+    };
     let host = u.host_str().unwrap_or("");
     let path = u.path();
     // Google's GSI opens several accounts.google.com pages — all popups
@@ -1310,8 +1465,13 @@ fn is_auth_url(url: &str) -> bool {
     }
     let auth_host = matches!(
         host,
-        "appleid.apple.com" | "login.microsoftonline.com" | "login.live.com"
-            | "id.twitch.tv" | "discord.com" | "www.facebook.com" | "github.com"
+        "appleid.apple.com"
+            | "login.microsoftonline.com"
+            | "login.live.com"
+            | "id.twitch.tv"
+            | "discord.com"
+            | "www.facebook.com"
+            | "github.com"
     );
     (auth_host
         && (path.contains("oauth")
@@ -1333,11 +1493,17 @@ fn spawn_webview(
     pos: LogicalPosition<f64>,
     size: LogicalSize<f64>,
 ) -> Result<tauri::Webview, String> {
+    let _timing = super::resources::span("webview-create");
     let main = app.get_window("main").ok_or("no main window")?;
     let label_pl = label.clone();
     let app_popup = app.clone();
     let app_dl = app.clone();
-    let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
+    let initial_url = if parsed.as_str() == super::new_tab::URL {
+        WebviewUrl::App(super::new_tab::ASSET.into())
+    } else {
+        WebviewUrl::External(parsed)
+    };
+    let mut builder = WebviewBuilder::new(&label, initial_url)
         // Dark render surface: no white flash between navigations, and the
         // repaint lag during live window resize blends into the dark UI
         .background_color(tauri::webview::Color(12, 12, 12, 255))
@@ -1377,9 +1543,12 @@ fn spawn_webview(
             // immediately self-closed — and that close was taking the main
             // window down with it.
             let lower = u.to_ascii_lowercase();
-            let is_web = lower.starts_with("http://") || lower.starts_with("https://")
-                || lower.starts_with("about:") || lower.starts_with("blob:")
-                || lower.starts_with("data:") || lower.starts_with("javascript:");
+            let is_web = lower.starts_with("http://")
+                || lower.starts_with("https://")
+                || lower.starts_with("about:")
+                || lower.starts_with("blob:")
+                || lower.starts_with("data:")
+                || lower.starts_with("javascript:");
             if !is_web && !u.is_empty() {
                 shell_open_detached(&u);
                 return tauri::webview::NewWindowResponse::Deny;
@@ -1396,13 +1565,33 @@ fn spawn_webview(
         })
         .on_download(move |_wv, event| handle_download(&app_dl, event))
         .initialization_script(PERF_INIT_SCRIPT)
+        .initialization_script(super::new_tab::INIT)
         .on_page_load(move |wv, payload| {
             use tauri::webview::PageLoadEvent;
             let eurl = payload.url().to_string();
             let app = wv.app_handle();
             // Unadopted spares stay silent — their warmup load must not
             // reach the frontend, history or nav timing
-            let Some(tab_id) = crate::browser::tab_of_label(app, &label_pl) else { return };
+            let Some(tab_id) = crate::browser::tab_of_label(app, &label_pl) else {
+                return;
+            };
+            if eurl == "about:blank"
+                && app
+                    .state::<Mutex<BrowserState>>()
+                    .lock()
+                    .unwrap()
+                    .tabs
+                    .get(&tab_id)
+                    .is_some_and(|tab| tab.url == super::new_tab::URL)
+            {
+                return;
+            }
+            if super::new_tab::is_document_url(&eurl) {
+                // Normal load completion is not proof the local UI mounted.
+                // Keep snapshot restore/loading completion behind its ready check.
+                super::new_tab::ensure_ready(app, &tab_id);
+                return;
+            }
             match payload.event() {
                 PageLoadEvent::Finished => {
                     let snapshot = {
@@ -1412,24 +1601,31 @@ fn spawn_webview(
                     };
                     if let Some(snapshot) = snapshot {
                         if snapshot["url"].as_str() == Some(eurl.as_str()) {
-                            let script = format!("{}({});", include_str!("sleep_restore.js"), snapshot);
+                            let script =
+                                format!("{}({});", include_str!("sleep_restore.js"), snapshot);
                             let _ = wv.eval(script);
                         }
                     }
                     let ms = {
                         let state = app.state::<Mutex<BrowserState>>();
                         let mut s = state.lock().unwrap();
-                        s.nav_started.remove(&tab_id).map(|t| t.elapsed().as_millis())
+                        s.nav_started
+                            .remove(&tab_id)
+                            .map(|t| t.elapsed().as_millis())
                     };
                     eprintln!("[nav] loaded in {}ms {}", ms.unwrap_or(0), eurl);
-                    let _ = wv.emit("page-loaded", serde_json::json!({ "id": tab_id, "url": eurl }));
+                    let _ = wv.emit(
+                        "page-loaded",
+                        serde_json::json!({ "id": tab_id, "url": eurl, "loadMs": ms }),
+                    );
                 }
                 PageLoadEvent::Started => {
                     let is_active = {
                         let state = app.state::<Mutex<BrowserState>>();
                         let mut s = state.lock().unwrap();
                         s.sleep_protected.remove(&tab_id);
-                        s.nav_started.insert(tab_id.clone(), std::time::Instant::now());
+                        s.nav_started
+                            .insert(tab_id.clone(), std::time::Instant::now());
                         s.active_tab_id.as_deref() == Some(tab_id.as_str())
                     };
                     // A fresh page paint can flash ABOVE the chrome before the
@@ -1528,11 +1724,18 @@ fn finish_foreground(
     }
     {
         let mut s = state.lock().unwrap();
-        s.histories.insert(id.to_string(), TabHistory::new(url.to_string()));
-        s.tabs.insert(id.to_string(), TabInfo {
-            id: id.to_string(), url: url.to_string(), title: "New Tab".into(),
-            favicon: None, is_loading: true,
-        });
+        s.histories
+            .insert(id.to_string(), TabHistory::new(url.to_string()));
+        s.tabs.insert(
+            id.to_string(),
+            TabInfo {
+                id: id.to_string(),
+                url: url.to_string(),
+                title: "New Tab".into(),
+                favicon: None,
+                is_loading: true,
+            },
+        );
         s.active_tab_id = Some(id.to_string());
     }
     // New children stack above the UI webview — re-assert chrome-on-top
@@ -1547,10 +1750,41 @@ fn finish_foreground(
 /// Keep one pre-built webview idling offscreen, pre-navigated to the new-tab
 /// page — Ctrl+T adopts it instead of paying webview construction + first
 /// navigation (the "instant new tab"). Rebuilt after every adoption.
+pub(crate) fn release_spare(app: &AppHandle) {
+    let label = {
+        let state = app.state::<Mutex<BrowserState>>();
+        let mut s = state.lock().unwrap();
+        s.spare_url = None;
+        s.spare.take()
+    };
+    if let Some(label) = label {
+        if let Some(wv) = app.get_webview(&label) {
+            let _ = wv.close();
+        }
+        app.state::<Mutex<BrowserState>>()
+            .lock()
+            .unwrap()
+            .suspended
+            .remove(&label);
+    }
+}
+
 pub(crate) fn ensure_spare(app: &AppHandle) {
-    const SPARE_WARM_URL: &str = "https://www.google.com/";
+    const SPARE_WARM_URL: &str = super::new_tab::URL;
+    static BUILDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if !super::resources::background_allowed() || BUILDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    struct Flight;
+    impl Drop for Flight {
+        fn drop(&mut self) {
+            BUILDING.store(false, Ordering::SeqCst);
+        }
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let _flight = Flight;
         super::session_cookies::wait_restored().await;
         // Don't compete with a startup restore / the adoption's own first
         // paint — the spare is a background nicety
@@ -1571,6 +1805,9 @@ pub(crate) fn ensure_spare(app: &AppHandle) {
         // Wait until no page has been loading for a bit (stale entries — a
         // load that never fires Finished — stop counting after 30s).
         loop {
+            if !super::resources::background_allowed() {
+                return;
+            }
             #[cfg(windows)]
             let input_lull = system_idle_ms() >= 2_000;
             #[cfg(not(windows))]
@@ -1588,11 +1825,15 @@ pub(crate) fn ensure_spare(app: &AppHandle) {
         let state = app.state::<Mutex<BrowserState>>();
         let label = {
             let mut s = state.lock().unwrap();
-            if s.spare.is_some() { return; }
+            if s.spare.is_some() {
+                return;
+            }
             s.spare_seq += 1;
             format!("spare-{}", s.spare_seq)
         };
-        let Ok(parsed) = SPARE_WARM_URL.parse::<url::Url>() else { return };
+        let Ok(parsed) = SPARE_WARM_URL.parse::<url::Url>() else {
+            return;
+        };
         let size = {
             let layout = state.lock().unwrap().layout;
             app.get_window("main")
@@ -1603,17 +1844,29 @@ pub(crate) fn ensure_spare(app: &AppHandle) {
                 })
                 .unwrap_or_else(|| LogicalSize::new(1000.0, 700.0))
         };
-        match spawn_webview(&app, label.clone(), parsed, None, LogicalPosition::new(-32000.0, 0.0), size) {
+        match spawn_webview(
+            &app,
+            label.clone(),
+            parsed,
+            None,
+            LogicalPosition::new(-32000.0, 0.0),
+            size,
+        ) {
             Ok(wv) => {
+                if !super::resources::background_allowed() {
+                    let _ = wv.close();
+                    return;
+                }
                 let _ = wv.hide();
                 {
                     let mut s = state.lock().unwrap();
                     s.spare = Some(label.clone());
                     s.spare_url = Some(SPARE_WARM_URL.into());
                 }
-                // Warm != expensive: once the page has settled, freeze the
-                // spare's renderer. Adoption thaws it — still instant, but the
-                // idle cost drops from a full renderer to a few tens of MB.
+                drop(_flight); // adoption can request a replacement during the settling delay
+                               // Warm != expensive: once the page has settled, freeze the
+                               // spare's renderer. Adoption thaws it — still instant, but the
+                               // idle cost drops from a full renderer to a few tens of MB.
                 tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 let still_spare = {
                     let state = app.state::<Mutex<BrowserState>>();
@@ -1666,7 +1919,10 @@ pub async fn create_browser_tab(
     let rect = compute_rect(&main, layout)?;
     let (pos, size) = match (rect.position, rect.size) {
         (tauri::Position::Logical(p), tauri::Size::Logical(s)) => (p, s),
-        _ => (LogicalPosition::new(layout.x, layout.y), LogicalSize::new(800.0, 600.0)),
+        _ => (
+            LogicalPosition::new(layout.x, layout.y),
+            LogicalSize::new(800.0, 600.0),
+        ),
     };
 
     let data_dir = profile.as_deref().and_then(|p| profile_dir(&app, p));
@@ -1674,7 +1930,8 @@ pub async fn create_browser_tab(
     // ── Warm-spare adoption: instant new tab ─────────────────────────────
     // Default profile + foreground only (spares live in the default data
     // directory; background pre-wakes aren't latency-sensitive).
-    if data_dir.is_none() && !background && !state.lock().unwrap().sleep_snapshots.contains_key(&id) {
+    if data_dir.is_none() && !background && !state.lock().unwrap().sleep_snapshots.contains_key(&id)
+    {
         let adopt = {
             let mut s = state.lock().unwrap();
             s.spare.take().map(|l| (l, s.spare_url.take()))
@@ -1698,7 +1955,8 @@ pub async fn create_browser_tab(
                         "document.documentElement.innerHTML='';\
                          document.documentElement.style.background='#0c0c0c';",
                     );
-                    if let Err(e) = wv.navigate(parsed.clone()) {
+                    let target = super::new_tab::navigation_url(&app, parsed.clone())?;
+                    if let Err(e) = wv.navigate(target.clone()) {
                         eprintln!("[spare-adopt] navigate failed for {id}: {e}");
                     }
                     // This is the ONLY caller that resumes a just-suspended
@@ -1713,7 +1971,6 @@ pub async fn create_browser_tab(
                     let app2 = app.clone();
                     let label2 = label_for_retry.clone();
                     let id2 = id.clone();
-                    let target = parsed.clone();
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_millis(700)).await;
                         let started = {
@@ -1734,7 +1991,14 @@ pub async fn create_browser_tab(
                 if already_there {
                     // Spare already sits on this page — no load event will
                     // fire, so close the frontend's loading state ourselves
-                    let _ = app.emit("page-loaded", serde_json::json!({ "id": id, "url": parsed.as_str() }));
+                    if parsed.as_str() == super::new_tab::URL {
+                        super::new_tab::ensure_ready(&app, &id);
+                    } else {
+                        let _ = app.emit(
+                            "page-loaded",
+                            serde_json::json!({ "id": id, "url": parsed.as_str() }),
+                        );
+                    }
                 }
                 ensure_spare(&app);
                 return Ok(());
@@ -1746,7 +2010,11 @@ pub async fn create_browser_tab(
     // ── Cold create ──────────────────────────────────────────────────────
     // Background pre-wake (hover on a sleeping tab): build parked + hidden so
     // it never flashes over the active page; switch later just shows it.
-    let spawn_pos = if background { LogicalPosition::new(-32000.0, 0.0) } else { pos };
+    let spawn_pos = if background {
+        LogicalPosition::new(-32000.0, 0.0)
+    } else {
+        pos
+    };
     let wv = spawn_webview(&app, id.clone(), parsed, data_dir, spawn_pos, size)?;
 
     {
@@ -1758,20 +2026,33 @@ pub async fn create_browser_tab(
     if background {
         let _ = wv.hide();
         let mut s = state.lock().unwrap();
-        s.histories.entry(id.clone()).or_insert_with(|| TabHistory::new(url.clone()));
+        s.histories
+            .entry(id.clone())
+            .or_insert_with(|| TabHistory::new(url.clone()));
         s.tabs.entry(id.clone()).or_insert_with(|| TabInfo {
-            id: id.clone(), url, title: "New Tab".into(), favicon: None, is_loading: true,
+            id: id.clone(),
+            url: url.clone(),
+            title: "New Tab".into(),
+            favicon: None,
+            is_loading: true,
         });
+        drop(s);
+        if url == super::new_tab::URL {
+            super::new_tab::ensure_ready(&app, &id);
+        }
         return Ok(());
     }
 
     finish_foreground(&app, &state, &id, &url, &wv, prev_active, layout, &main);
+    if url == super::new_tab::URL {
+        super::new_tab::ensure_ready(&app, &id);
+    }
     Ok(())
 }
 
-/// Put a long-idle background tab to sleep: destroy its webview (frees the
-/// whole renderer process, typically 100-400 MB) while keeping the tab entry
-/// and its URL trail. Waking = the existing lazy-restore path.
+/// Snapshot a supported long-idle background document, then close its WebView.
+/// Releases this view's resources, but a shared renderer process may remain.
+/// Keeps the tab entry and URL trail; waking uses the lazy-restore path.
 #[tauri::command]
 pub async fn hibernate_tab(
     app: AppHandle,
@@ -1780,7 +2061,10 @@ pub async fn hibernate_tab(
 ) -> Result<(), String> {
     {
         let mut s = state.lock().unwrap();
-        if s.active_tab_id.as_deref() == Some(&id) || s.sleep_protected.contains(&id) || !s.sleep_capturing.insert(id.clone()) {
+        if s.sleep_protected.contains(&id) {
+            return Err("page state requires light sleep".into());
+        }
+        if s.active_tab_id.as_deref() == Some(&id) || !s.sleep_capturing.insert(id.clone()) {
             return Err("tab is active or already saving state".into());
         }
     }
@@ -1789,16 +2073,26 @@ pub async fn hibernate_tab(
     if let Some(wv) = crate::browser::tab_webview(&app, &id) {
         #[cfg(windows)]
         let _ = wv.with_webview(|pwv| unsafe {
-            use windows_core::Interface;
             use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
-            if let Ok(core) = pwv.controller().CoreWebView2().and_then(|c| c.cast::<ICoreWebView2_3>()) {
+            use windows_core::Interface;
+            if let Ok(core) = pwv
+                .controller()
+                .CoreWebView2()
+                .and_then(|c| c.cast::<ICoreWebView2_3>())
+            {
                 let _ = core.Resume();
             }
         });
     }
-    let capture = tokio::time::timeout(std::time::Duration::from_secs(2),
-        crate::agent::eval::eval_in(&app, Some(&id), include_str!("sleep_capture.js").into())).await;
-    let snapshot = capture.ok().and_then(Result::ok)
+    let _timing = super::resources::span("sleep-snapshot");
+    let capture = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::agent::eval::eval_in(&app, Some(&id), include_str!("sleep_capture.js").into()),
+    )
+    .await;
+    let snapshot = capture
+        .ok()
+        .and_then(Result::ok)
         .filter(|raw| raw.len() <= 65536)
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .filter(|s| s["url"].is_string() && s["forms"].is_array() && s["scrollers"].is_array());
@@ -1808,7 +2102,9 @@ pub async fn hibernate_tab(
         if s.active_tab_id.as_deref() == Some(&id) {
             return Err("won't hibernate the active tab".into());
         }
-        if !s.tabs.contains_key(&id) { return Err("tab closed".into()); }
+        if !s.tabs.contains_key(&id) {
+            return Err("tab closed".into());
+        }
         let Some(snapshot) = snapshot else {
             s.sleep_protected.insert(id.clone());
             drop(s);
@@ -1838,6 +2134,7 @@ pub async fn switch_browser_tab(
     state: tauri::State<'_, Mutex<BrowserState>>,
     id: String,
 ) -> Result<bool, String> {
+    let _timing = super::resources::span("tab-switch-native");
     if crate::browser::tab_webview(&app, &id).is_none() {
         return Ok(false);
     }
@@ -1862,7 +2159,9 @@ pub async fn switch_browser_tab(
     }
     if let Some(prev) = prev {
         if prev != id {
-            if let (Some(main), Some(wv)) = (main.as_ref(), crate::browser::tab_webview(&app, &prev)) {
+            if let (Some(main), Some(wv)) =
+                (main.as_ref(), crate::browser::tab_webview(&app, &prev))
+            {
                 let _ = wv.set_bounds(parked_rect(main, layout));
                 // Hidden = Chromium stops compositing it → GPU/CPU freed for
                 // the foreground tab (audio keeps playing, like normal browsers)
@@ -1927,6 +2226,7 @@ pub async fn navigate_tab(
     url: String,
 ) -> Result<(), String> {
     let parsed = url.parse::<url::Url>().map_err(|e| e.to_string())?;
+    let parsed = super::new_tab::navigation_url(&app, parsed)?;
     {
         let mut s = state.lock().unwrap();
         if let Some(tab) = s.tabs.get_mut(&id) {
@@ -1936,7 +2236,11 @@ pub async fn navigate_tab(
     }
     if let Some(wv) = crate::browser::tab_webview(&app, &id) {
         resume_webview(&app, &crate::browser::tab_label(&app, &id), &wv);
-        wv.navigate(parsed).map_err(|e: tauri::Error| e.to_string())?;
+        wv.navigate(parsed)
+            .map_err(|e: tauri::Error| e.to_string())?;
+        if url == super::new_tab::URL {
+            super::new_tab::ensure_ready(&app, &id);
+        }
         // Navigating the ACTIVE tab must also un-hide it — a whole-app freeze
         // (minimize / idle watchdog) may have hidden the webview, and a
         // navigation that lands on an invisible renderer reads as "search
@@ -1974,25 +2278,45 @@ pub async fn push_to_history(
 #[cfg(windows)]
 fn native_history_nav(wv: &tauri::Webview, forward: bool) -> bool {
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
-    let ok = wv.with_webview(move |pwv| unsafe {
-        let controller = pwv.controller();
-        let moved = controller.CoreWebView2().ok().and_then(|core| {
-            let mut can = windows_core::BOOL::default();
-            if forward {
-                core.CanGoForward(&mut can).ok()?;
-                if can.as_bool() { core.GoForward().ok()?; Some(true) } else { Some(false) }
-            } else {
-                core.CanGoBack(&mut can).ok()?;
-                if can.as_bool() { core.GoBack().ok()?; Some(true) } else { Some(false) }
-            }
-        }).unwrap_or(false);
-        let _ = tx.send(moved);
-    }).is_ok();
-    ok && rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap_or(false)
+    let ok = wv
+        .with_webview(move |pwv| unsafe {
+            let controller = pwv.controller();
+            let moved = controller
+                .CoreWebView2()
+                .ok()
+                .and_then(|core| {
+                    let mut can = windows_core::BOOL::default();
+                    if forward {
+                        core.CanGoForward(&mut can).ok()?;
+                        if can.as_bool() {
+                            core.GoForward().ok()?;
+                            Some(true)
+                        } else {
+                            Some(false)
+                        }
+                    } else {
+                        core.CanGoBack(&mut can).ok()?;
+                        if can.as_bool() {
+                            core.GoBack().ok()?;
+                            Some(true)
+                        } else {
+                            Some(false)
+                        }
+                    }
+                })
+                .unwrap_or(false);
+            let _ = tx.send(moved);
+        })
+        .is_ok();
+    ok && rx
+        .recv_timeout(std::time::Duration::from_millis(500))
+        .unwrap_or(false)
 }
 
 #[cfg(not(windows))]
-fn native_history_nav(_wv: &tauri::Webview, _forward: bool) -> bool { false }
+fn native_history_nav(_wv: &tauri::Webview, _forward: bool) -> bool {
+    false
+}
 
 async fn history_nav(
     app: AppHandle,
@@ -2003,7 +2327,9 @@ async fn history_nav(
         Some(i) => i,
         None => return Ok(()),
     };
-    let Some(wv) = crate::browser::tab_webview(&app, &id) else { return Ok(()) };
+    let Some(wv) = crate::browser::tab_webview(&app, &id) else {
+        return Ok(());
+    };
     resume_webview(&app, &crate::browser::tab_label(&app, &id), &wv);
 
     // Fast path: renderer session history (instant, preserves state)
@@ -2015,7 +2341,11 @@ async fn history_nav(
         // Keep our URL list in step without triggering a nav
         if let Ok(mut s) = state.lock() {
             if let Some(h) = s.histories.get_mut(&id) {
-                if forward { h.forward(); } else { h.back(); }
+                if forward {
+                    h.forward();
+                } else {
+                    h.back();
+                }
             }
         }
         return Ok(());
@@ -2024,11 +2354,15 @@ async fn history_nav(
     // Fallback: our own URL list (restored tabs whose renderer history is gone)
     let url = {
         let mut s = state.lock().unwrap();
-        s.histories.get_mut(&id).and_then(|h| if forward { h.forward() } else { h.back() })
+        s.histories
+            .get_mut(&id)
+            .and_then(|h| if forward { h.forward() } else { h.back() })
     };
     if let Some(url) = url {
         let parsed = url.parse::<url::Url>().map_err(|e| e.to_string())?;
-        wv.navigate(parsed).map_err(|e: tauri::Error| e.to_string())?;
+        let parsed = super::new_tab::navigation_url(&app, parsed)?;
+        wv.navigate(parsed)
+            .map_err(|e: tauri::Error| e.to_string())?;
     }
     Ok(())
 }

@@ -43,7 +43,11 @@ fn load_facts(app: &AppHandle) -> Vec<MemFact> {
 fn save_facts(app: &AppHandle, facts: &mut Vec<MemFact>) {
     if facts.len() > MEMORY_CAP {
         // Forget the weakest memories, keep the strong ones
-        facts.sort_by(|a, b| fact_score(b).partial_cmp(&fact_score(a)).unwrap_or(std::cmp::Ordering::Equal));
+        facts.sort_by(|a, b| {
+            fact_score(b)
+                .partial_cmp(&fact_score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         facts.truncate(MEMORY_CAP);
     }
     if let (Some(p), Ok(json)) = (memory_path(app), serde_json::to_string_pretty(facts)) {
@@ -62,7 +66,11 @@ pub(crate) fn remember_fact(app: &AppHandle, fact: &str) -> String {
         existing.uses += 1;
         existing.ts = now_secs();
     } else {
-        facts.push(MemFact { fact: fact.to_string(), ts: now_secs(), uses: 0 });
+        facts.push(MemFact {
+            fact: fact.to_string(),
+            ts: now_secs(),
+            uses: 0,
+        });
     }
     save_facts(app, &mut facts);
     r#"{"ok":true,"saved":true}"#.into()
@@ -106,6 +114,10 @@ pub(crate) fn recall_facts(app: &AppHandle, query: &str) -> String {
 /// Strongest memories for prompt injection (no query — background context).
 pub(crate) fn top_memories(app: &AppHandle, n: usize) -> Vec<String> {
     let mut facts = load_facts(app);
-    facts.sort_by(|a, b| fact_score(b).partial_cmp(&fact_score(a)).unwrap_or(std::cmp::Ordering::Equal));
+    facts.sort_by(|a, b| {
+        fact_score(b)
+            .partial_cmp(&fact_score(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     facts.into_iter().take(n).map(|f| f.fact).collect()
 }

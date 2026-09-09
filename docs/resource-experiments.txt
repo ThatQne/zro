@@ -1,0 +1,83 @@
+ZRO RESOURCE EXPERIMENTS — implementation notes, 2026-09-08
+
+Scope: app-owned scheduling/caching, not replacement of Chromium or its heap.
+No measured end-to-end performance advantage is claimed by this change.
+
+Implemented algorithms
+----------------------
+1. Reload-cost EWMA: new estimate = .75 * old + .25 * valid load sample.
+   Ignore missing/zero/nonfinite/>120-second samples. This is load completion,
+   not first paint, not a measure of renderer CPU, and includes network time.
+2. Reuse: increment on activation, cap at 32, exponential decay with 30-minute
+   half-life. Session-only. Retention combines aged reuse, bounded reload cost,
+   and recency. Scores are computed once per candidate, not per sort comparison.
+   This is a testable heuristic, not an implementation of ARC/S3-FIFO/MemBalancer.
+3. Memory-pressure hysteresis: enter elevated at >=85% used or <1536 MiB free;
+   critical at >=93% used or <768 MiB free. Exit critical below88% with >=1024
+   MiB available; exit elevated below80% with >=2048 MiB. Invalid samples keep
+   last state. One GlobalMemoryStatusEx query every30s normal /10s under pressure,
+   via the existing scheduler timer. No sampling while the UI document is hidden.
+4. Pressure reduces background admission to1 (elevated) /0 (critical), lowers
+   awake targets, shortens sleep deadlines to2 /1 minutes. Off still prohibits
+   automatic unloading; active/loading/audio/pinned/protected tabs remain exempt.
+5. CLOCK second-chance cache of blocking decisions:256 entries, each key <=4KiB,
+   full URL/source/type equality, no hash-only decisions. Hits preserve blocking
+   counters. Reset on filter-engine replacement. No external source copied.
+   Both HashMap and ring own key copies: approximately2MiB maximum key payload
+   plus allocator/entry overhead, bounded per engine thread. Long keys bypass it.
+
+Integration
+-----------
+- zro://newtab maps to a bundled local document and is excluded from history
+  and semantic indexing. Existing Google tabs stay unchanged.
+- Spare generation is single-flight; paused while pages load; released when
+  hidden/under pressure. Spare checks OS memory before creating. A spare still
+  costs a WebView; this does not eliminate the renderer or Chromium baseline.
+- Semantic indexing is single-flight, targets an exact tab+URL, yields to load,
+  input and memory pressure, and walks at most4000 text nodes /6000 characters
+  without innerText's layout flush. Skipped indexing is best-effort (not queued
+  forever). Session index stops admitting at2000 docs; no live-vector compaction.
+- Automatic512MiB UDF-based cache purging removed from startup. Chromium's HTTP
+  cache remains intact; manual clearing can still remove offline SW cache assets.
+- Same-origin iframe snapshots recurse <=2 levels /8 frames, share budgets of
+  10000 nodes /200 fields /100 scrollers, and retain the32KiB-character /64KiB-byte
+  limits. Cross-origin/inaccessible/unsettled frames, canvases, media, rich editors
+  and open shadow roots keep their renderer. Generic JavaScript application state
+  cannot be reconstructed; even ordinary snapshots remain best-effort.
+- Restore checks each document URL, uses frame-local field setters, stops on user
+  input, and limits document listener records. Never bypasses same-origin policy.
+- Usage > Capture native timings: session-only256 samples per fixed operation,
+  no URLs/text, p95/max for callback/create/switch/overlay/snapshot durations.
+  Turn it on for diagnosis, off for overhead-sensitive baseline tests. This is
+  wall time in the instrumented scope, not first paint or hardware CPU profiling.
+
+Research checked
+----------------
+https://github.com/1a1a11a/libCacheSim
+https://github.com/cacheMon/libCacheSim
+https://github.com/djc/s3-fifo
+  Algorithm comparison resources; S3-FIFO not imported into zro. A simulator is
+  not a drop-in tab manager: web state protection and shared renderers matter.
+https://github.com/v8/v8/blob/main/src/heap/memory-balancer.cc
+https://chromium.googlesource.com/v8/v8/+/refs/heads/main/src/heap/memory-balancer.h
+  Current V8 contains memory-balancing code. Availability/default behavior in a
+  specific WebView2 runtime was not verified. No experimental V8 flags enabled.
+https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex
+  Constant-sized OS physical-memory query; not per-tab attribution.
+
+Validation / next measurements
+------------------------------
+pnpm test:browser
+pnpm build
+cargo check --manifest-path src-tauri/Cargo.toml --lib
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+./scripts/measure-browser.ps1 -BrowserProcessId 12345 -Samples 30 -IntervalSeconds 2
+(Replace 12345 with the browser's actual root process ID.)
+
+Compare equivalent clean profiles, URLs, viewport, shields/extensions, runtime
+versions, power modes and Chrome Memory Saver settings. Alternate run order,
+repeat five times, test10/30/100 tabs and burst-open/idle/wake phases. Process
+private commit is not resident RAM; summed working set double-counts shared
+pages. The sampler does not measure page load/paint. Use native timing capture
+plus WebView2 ETW for input stalls. Stress Alt+Tab/drag/sleep/drafts/media before
+publishing. Builds and mocked-DOM tests do not prove those live interactions.

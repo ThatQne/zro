@@ -121,7 +121,10 @@ fn new_id() -> String {
 }
 
 fn host_of(url: &str) -> Option<String> {
-    url::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+    url::Url::parse(url).ok().and_then(|u| {
+        u.host_str()
+            .map(|h| h.trim_start_matches("www.").to_string())
+    })
 }
 
 fn canonical_memory_url(raw: &str) -> String {
@@ -189,7 +192,12 @@ impl<'de> Deserialize<'de> for MemGraph {
             dim: usize,
         }
         let w = Wire::deserialize(d)?;
-        Ok(MemGraph { nodes: w.nodes, edges: w.edges, dim: w.dim, loaded: true })
+        Ok(MemGraph {
+            nodes: w.nodes,
+            edges: w.edges,
+            dim: w.dim,
+            loaded: true,
+        })
     }
 }
 
@@ -202,7 +210,11 @@ fn save(app: &AppHandle, g: &MemGraph) {
     }
     if let (Some(p), Ok(json)) = (
         graph_path(app),
-        serde_json::to_string(&Wire { nodes: &g.nodes, edges: &g.edges, dim: g.dim }),
+        serde_json::to_string(&Wire {
+            nodes: &g.nodes,
+            edges: &g.edges,
+            dim: g.dim,
+        }),
     ) {
         let _ = std::fs::write(p, json);
     }
@@ -249,7 +261,12 @@ fn upsert_edge(g: &mut MemGraph, a: &str, b: &str, kind: EdgeKind, weight: f32) 
         }
         return;
     }
-    g.edges.push(MemEdge { a: a.to_string(), b: b.to_string(), kind, weight });
+    g.edges.push(MemEdge {
+        a: a.to_string(),
+        b: b.to_string(),
+        kind,
+        weight,
+    });
 }
 
 /// Form semantic edges from the node at `idx` to its nearest neighbours.
@@ -288,50 +305,89 @@ fn autolink(g: &mut MemGraph, idx: usize) {
 /// the single page-to-page trail that led through a browsing session.
 fn autolink_structural(g: &mut MemGraph, idx: usize) {
     let me = g.nodes[idx].clone();
-    let my_tags: std::collections::HashSet<String> = me.tags.iter()
-        .map(|t| t.trim().to_ascii_lowercase()).filter(|t| !t.is_empty()).collect();
+    let my_tags: std::collections::HashSet<String> = me
+        .tags
+        .iter()
+        .map(|t| t.trim().to_ascii_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
 
     if !my_tags.is_empty() {
-        let mut matches: Vec<(String, usize)> = g.nodes.iter().enumerate()
+        let mut matches: Vec<(String, usize)> = g
+            .nodes
+            .iter()
+            .enumerate()
             .filter(|(j, _)| *j != idx)
             .filter_map(|(_, n)| {
-                let shared = n.tags.iter().map(|t| t.trim().to_ascii_lowercase())
-                    .filter(|t| my_tags.contains(t)).count();
+                let shared = n
+                    .tags
+                    .iter()
+                    .map(|t| t.trim().to_ascii_lowercase())
+                    .filter(|t| my_tags.contains(t))
+                    .count();
                 (shared > 0).then(|| (n.id.clone(), shared))
-            }).collect();
+            })
+            .collect();
         matches.sort_by(|a, b| b.1.cmp(&a.1));
         for (id, shared) in matches.into_iter().take(TAG_MAX_LINKS) {
-            upsert_edge(g, &me.id, &id, EdgeKind::Tag, (0.7 + shared as f32 * 0.1).min(1.0));
+            upsert_edge(
+                g,
+                &me.id,
+                &id,
+                EdgeKind::Tag,
+                (0.7 + shared as f32 * 0.1).min(1.0),
+            );
         }
     }
 
     if let Some(url) = me.url.as_deref() {
         let host = host_of(url);
-        let mut site_matches: Vec<(String, f32, u64)> = g.nodes.iter().enumerate()
+        let mut site_matches: Vec<(String, f32, u64)> = g
+            .nodes
+            .iter()
+            .enumerate()
             .filter(|(j, _)| *j != idx)
             .filter_map(|(_, n)| {
                 let other_url = n.url.as_deref()?;
-                if other_url == url { return Some((n.id.clone(), 1.0, n.updated)); }
-                let same_site = host.as_ref().is_some_and(|h| host_of(other_url).as_ref() == Some(h));
+                if other_url == url {
+                    return Some((n.id.clone(), 1.0, n.updated));
+                }
+                let same_site = host
+                    .as_ref()
+                    .is_some_and(|h| host_of(other_url).as_ref() == Some(h));
                 // A site edge is useful between saved knowledge and browsing
                 // context. Visit-to-visit site cliques are just visual noise.
                 if same_site && (me.kind != NodeKind::Visit || n.kind != NodeKind::Visit) {
                     Some((n.id.clone(), 0.72, n.updated))
-                } else { None }
-            }).collect();
-        site_matches.sort_by(|a, b| b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal).then(b.2.cmp(&a.2)));
+                } else {
+                    None
+                }
+            })
+            .collect();
+        site_matches.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.2.cmp(&a.2))
+        });
         for (id, weight, _) in site_matches.into_iter().take(DOMAIN_MAX_LINKS) {
             upsert_edge(g, &me.id, &id, EdgeKind::Domain, weight);
         }
     }
 
     if me.kind == NodeKind::Visit {
-        let previous = g.nodes.iter().enumerate()
-            .filter(|(j, n)| *j != idx && n.kind == NodeKind::Visit && n.url != me.url
-                && n.updated <= me.created
-                && me.created.saturating_sub(n.updated) <= TRAIL_WINDOW_SECS)
-            .max_by_key(|(_, n)| n.updated).map(|(_, n)| n.id.clone());
+        let previous = g
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(j, n)| {
+                *j != idx
+                    && n.kind == NodeKind::Visit
+                    && n.url != me.url
+                    && n.updated <= me.created
+                    && me.created.saturating_sub(n.updated) <= TRAIL_WINDOW_SECS
+            })
+            .max_by_key(|(_, n)| n.updated)
+            .map(|(_, n)| n.id.clone());
         if let Some(id) = previous {
             upsert_edge(g, &me.id, &id, EdgeKind::Temporal, 0.65);
         }
@@ -395,10 +451,14 @@ fn enforce_cap(g: &mut MemGraph) {
         let vb = (nb.kind == NodeKind::Visit) as u8;
         vb.cmp(&va).then(na.updated.cmp(&nb.updated))
     });
-    let remove: std::collections::HashSet<String> =
-        idxs.into_iter().take(over).map(|i| g.nodes[i].id.clone()).collect();
+    let remove: std::collections::HashSet<String> = idxs
+        .into_iter()
+        .take(over)
+        .map(|i| g.nodes[i].id.clone())
+        .collect();
     g.nodes.retain(|n| !remove.contains(&n.id));
-    g.edges.retain(|e| !remove.contains(&e.a) && !remove.contains(&e.b));
+    g.edges
+        .retain(|e| !remove.contains(&e.a) && !remove.contains(&e.b));
 }
 
 /// Node minus its embedding, for shipping to the frontend.
@@ -445,7 +505,9 @@ pub async fn mem_add(
 ) -> Result<serde_json::Value, String> {
     let body = body.unwrap_or_default();
     let now = now_secs();
-    let url = url.filter(|u| !u.is_empty()).map(|u| canonical_memory_url(&u));
+    let url = url
+        .filter(|u| !u.is_empty())
+        .map(|u| canonical_memory_url(&u));
     let id = new_id();
 
     // Hot path: insert + persist immediately, no embedding. The vector and its
@@ -524,7 +586,8 @@ pub fn mem_update(
         n.updated = now_secs();
     }
     if links_changed {
-        g.edges.retain(|e| e.kind == EdgeKind::Manual || (e.a != id && e.b != id));
+        g.edges
+            .retain(|e| e.kind == EdgeKind::Manual || (e.a != id && e.b != id));
         autolink_structural(&mut g, idx);
     }
     let out = node_view(&g.nodes[idx]);
@@ -612,7 +675,8 @@ pub async fn mem_search(
     let ql = q.to_lowercase();
     let words: Vec<&str> = ql.split_whitespace().filter(|w| w.len() > 1).collect();
     for n in &g.nodes {
-        let hay = format!("{} {} {}", n.title, n.body, n.url.as_deref().unwrap_or("")).to_lowercase();
+        let hay =
+            format!("{} {} {}", n.title, n.body, n.url.as_deref().unwrap_or("")).to_lowercase();
         let hits = words.iter().filter(|w| hay.contains(**w)).count();
         if hits > 0 {
             let boost = hits as f32 * 0.5;
@@ -676,8 +740,7 @@ pub async fn mem_ingest_visit(
 
     let mut g = state.lock().unwrap();
     // Raced another ingest of the same URL?
-    if g
-        .nodes
+    if g.nodes
         .iter()
         .any(|n| n.kind == NodeKind::Visit && n.url.as_deref() == Some(url.as_str()))
     {

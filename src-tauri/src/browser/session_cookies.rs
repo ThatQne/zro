@@ -62,7 +62,8 @@ fn store_path(app: &AppHandle) -> Option<std::path::PathBuf> {
 /// 120s (minimized overnight = renderer resurrected and never re-frozen,
 /// because the freeze flags were still set).
 fn jar_webview(app: &AppHandle) -> Option<tauri::Webview> {
-    app.get_webview("main").or_else(|| super::active_webview(app))
+    app.get_webview("main")
+        .or_else(|| super::active_webview(app))
 }
 
 // ── DPAPI (encrypt-at-rest, current Windows user) ─────────────────────────────
@@ -197,8 +198,12 @@ pub(crate) async fn snapshot(app: &AppHandle) {
     .await
     .unwrap_or_default();
 
-    let Ok(json) = serde_json::to_vec(&cookies) else { return };
-    let Some(blob) = dpapi(&json, true) else { return };
+    let Ok(json) = serde_json::to_vec(&cookies) else {
+        return;
+    };
+    let Some(blob) = dpapi(&json, true) else {
+        return;
+    };
     if let Err(e) = std::fs::write(&path, blob) {
         eprintln!("[cookies] snapshot write failed: {e}");
     }
