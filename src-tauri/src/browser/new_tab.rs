@@ -83,7 +83,7 @@ fn merge_save(
             out["settings"]["blocks"] = blocks.clone();
         }
     }
-    for name in ["blocks", "factory", "merge", "pool"] {
+    for name in ["blocks", "factory", "merge", "pool", "breakout"] {
         if let Some(game) = incoming["games"].get(name) {
             if updated(game) >= updated(&out["games"][name]) {
                 out["games"][name] = game.clone();

@@ -221,6 +221,19 @@ test('rapid foreground creations coalesce and do not create abandoned renderers'
   assert.ok(abandoned.every(t => t.hibernated && !t.isLoading));
 });
 
+test('duplicate copies history before its initial native page is created', async () => {
+  const h = storeHarness();
+  await h.store.getState().createTab('https://example.com');
+  const source = h.active();
+  await h.store.getState().createTab('https://example.com', undefined, { duplicateFrom: source });
+  const copy = h.active();
+  assert.notEqual(copy, source);
+  const cloneIndex = h.calls.findIndex(c => c.cmd === 'clone_tab_history');
+  assert.equal(h.calls[cloneIndex].args.sourceId, source);
+  assert.equal(h.calls[cloneIndex].args.id, copy);
+  assert.ok(cloneIndex < h.calls.findIndex(c => c.cmd === 'create_browser_tab' && c.args.id === copy));
+});
+
 test('local new-tab readiness completes loading and failures stop the spinner without affecting navigated tabs', async () => {
   const h = storeHarness();
   const cleanup = await h.store.getState().initEvents();

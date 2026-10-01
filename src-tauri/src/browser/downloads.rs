@@ -37,7 +37,7 @@ pub(crate) fn finish_by_path(app: &AppHandle, path: &str, success: bool, reason:
         let mut items = dls.items.lock().unwrap();
         items
             .iter_mut()
-            .find(|i| i.path == path && i.state == "active")
+            .find(|i| same_path(&i.path, path) && i.state == "active")
             .map(|item| {
                 item.state = if success { "done" } else { "failed" }.into();
                 item.reason = reason;
@@ -57,7 +57,39 @@ pub(crate) fn finish_by_path(app: &AppHandle, path: &str, success: bool, reason:
 pub(crate) fn id_for_path(app: &AppHandle, path: &str) -> Option<u64> {
     let dls = app.state::<Downloads>();
     let items = dls.items.lock().unwrap();
-    items.iter().find(|i| i.path == path).map(|i| i.id)
+    items
+        .iter()
+        .find(|i| same_path(&i.path, path))
+        .map(|i| i.id)
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    a.replace('/', "\\")
+        .eq_ignore_ascii_case(&b.replace('/', "\\"))
+}
+
+fn completion_index(
+    items: &[DownloadInfo],
+    url: &str,
+    path: Option<&std::path::Path>,
+) -> Option<usize> {
+    if let Some(p) = path {
+        items
+            .iter()
+            .position(|i| i.state == "active" && same_path(&i.path, &p.to_string_lossy()))
+    } else {
+        let mut matches = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.state == "active" && i.url == url)
+            .map(|(n, _)| n);
+        let first = matches.next();
+        if matches.next().is_none() {
+            first
+        } else {
+            None
+        }
+    }
 }
 
 fn epoch_ms() -> u64 {
@@ -68,9 +100,19 @@ fn epoch_ms() -> u64 {
 }
 
 /// Pick a non-colliding path in the user's Downloads folder ("name (2).ext").
-fn unique_download_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
+fn unique_download_path(
+    dir: &std::path::Path,
+    filename: &str,
+    items: &[DownloadInfo],
+) -> std::path::PathBuf {
+    let occupied = |p: &std::path::Path| {
+        p.exists()
+            || items
+                .iter()
+                .any(|i| i.state == "active" && same_path(&i.path, &p.to_string_lossy()))
+    };
     let mut target = dir.join(filename);
-    if !target.exists() {
+    if !occupied(&target) {
         return target;
     }
     let p = std::path::Path::new(filename);
@@ -84,7 +126,7 @@ fn unique_download_path(dir: &std::path::Path, filename: &str) -> std::path::Pat
         .unwrap_or_default();
     for n in 2..1000 {
         target = dir.join(format!("{stem} ({n}){ext}"));
-        if !target.exists() {
+        if !occupied(&target) {
             return target;
         }
     }
@@ -226,12 +268,12 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
             // duplicate row that never completes, because only one of the two
             // has a real operation behind it. A deliberate re-download is
             // seconds apart at minimum, so it still gets through.
+            let dls = app.state::<Downloads>();
+            let mut items = dls.items.lock().unwrap();
             {
-                let dls = app.state::<Downloads>();
-                let items = dls.items.lock().unwrap();
                 let now = epoch_ms();
                 if items.iter().any(|i| {
-                    i.state == "active" && i.url == url_s && now.saturating_sub(i.started_at) < 1500
+                    i.state != "failed" && i.url == url_s && now.saturating_sub(i.started_at) < 2000
                 }) {
                     eprintln!("[dl] duplicate Requested within 1.5s, ignoring: {url_s}");
                     return false;
@@ -239,9 +281,8 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
             }
 
             if let Ok(dir) = app.path().download_dir() {
-                *destination = unique_download_path(&dir, &filename);
+                *destination = unique_download_path(&dir, &filename, &items);
             }
-            let dls = app.state::<Downloads>();
             let id = dls
                 .counter
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -258,7 +299,8 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                 started_at: epoch_ms(),
                 reason: None,
             };
-            dls.items.lock().unwrap().insert(0, info.clone());
+            items.insert(0, info.clone());
+            drop(items);
             let _ = app.emit(
                 "download-event",
                 serde_json::json!({ "kind": "started", "item": info }),
@@ -284,17 +326,9 @@ pub(crate) fn handle_download(app: &AppHandle, event: tauri::webview::DownloadEv
                 // Match by URL first; a redirected download (link → CDN) reports
                 // a different final URL, so fall back to the most-recently
                 // started still-active item instead of leaving it stuck "active".
-                let pos = items
-                    .iter()
-                    .position(|i| i.state == "active" && i.url == url_s)
-                    .or_else(|| {
-                        items
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, i)| i.state == "active")
-                            .max_by_key(|(_, i)| i.started_at)
-                            .map(|(idx, _)| idx)
-                    });
+                // Never settle an unrelated active download. Redirects change
+                // URLs, but the destination remains the operation's identity.
+                let pos = completion_index(&items, &url_s, path.as_deref());
                 pos.map(|idx| {
                     let item = &mut items[idx];
                     item.state = if success { "done" } else { "failed" }.into();
@@ -327,26 +361,32 @@ pub async fn download_crx(app: AppHandle, ext_id: String) -> Result<(), String> 
         "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=126.0.6478.127&acceptformat=crx3&x=id%3D{ext_id}%26uc"
     );
     let dir = app.path().download_dir().map_err(|e| e.to_string())?;
-    let path = unique_download_path(&dir, &format!("{ext_id}.crx"));
-
     let dls = app.state::<Downloads>();
-    let id = dls
-        .counter
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        + 1;
-    let info = DownloadInfo {
-        id,
-        url: url.clone(),
-        path: path.to_string_lossy().to_string(),
-        filename: path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("{ext_id}.crx")),
-        state: "active".into(),
-        started_at: epoch_ms(),
-        reason: None,
+    let (id, path, info) = {
+        let mut items = dls.items.lock().unwrap();
+        if items.iter().any(|i| i.state == "active" && i.url == url) {
+            return Ok(());
+        }
+        let path = unique_download_path(&dir, &format!("{ext_id}.crx"), &items);
+        let id = dls
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let info = DownloadInfo {
+            id,
+            url: url.clone(),
+            path: path.to_string_lossy().to_string(),
+            filename: path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("{ext_id}.crx")),
+            state: "active".into(),
+            started_at: epoch_ms(),
+            reason: None,
+        };
+        items.insert(0, info.clone());
+        (id, path, info)
     };
-    dls.items.lock().unwrap().insert(0, info.clone());
     let _ = app.emit(
         "download-event",
         serde_json::json!({ "kind": "started", "item": info }),
@@ -385,8 +425,56 @@ pub fn record_completed(app: &AppHandle, url: String, path: &std::path::Path) {
 }
 
 #[tauri::command]
-pub async fn list_downloads(dls: tauri::State<'_, Downloads>) -> Result<Vec<DownloadInfo>, String> {
-    Ok(dls.items.lock().unwrap().clone())
+pub async fn list_downloads(app: AppHandle) -> Result<Vec<DownloadInfo>, String> {
+    #[cfg(windows)]
+    {
+        let a = app.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            // A callback can be missed while a page/window is being torn down.
+            // Reconcile against the actual operation, never bytes == total.
+            let ops = DL_OPS.with(|m| m.borrow().values().cloned().collect::<Vec<_>>());
+            for op in ops {
+                unsafe {
+                    settle_operation(&a, &op);
+                }
+            }
+            let _ = tx.send(());
+        })
+        .map_err(|e| e.to_string())?;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+    }
+    Ok(app.state::<Downloads>().items.lock().unwrap().clone())
+}
+
+#[cfg(windows)]
+pub(crate) unsafe fn settle_operation(
+    app: &AppHandle,
+    op: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
+    if op.State(&mut state).is_err() || state == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
+        return;
+    }
+    let mut p = windows_core::PWSTR::null();
+    if op.ResultFilePath(&mut p).is_err() {
+        return;
+    }
+    let path = p.to_string().unwrap_or_default();
+    windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as _));
+    let ok = state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
+    let reason = if ok {
+        None
+    } else {
+        let mut r = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON::default();
+        let _ = op.InterruptReason(&mut r);
+        Some(format!("interrupted ({})", r.0))
+    };
+    finish_by_path(app, &path, ok, reason);
+    if let Some(id) = id_for_path(app, &path) {
+        forget_op(id);
+    }
 }
 
 // ── Live download control (cancel / pause / resume) ──────────────────────────
@@ -616,4 +704,57 @@ pub async fn open_download(_path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn reveal_download(_path: String) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn item(id: u64, path: &str, url: &str) -> DownloadInfo {
+        DownloadInfo {
+            id,
+            path: path.into(),
+            url: url.into(),
+            filename: "file".into(),
+            state: "active".into(),
+            started_at: 0,
+            reason: None,
+        }
+    }
+    #[test]
+    fn completion_never_settles_an_unrelated_download() {
+        let items = vec![
+            item(1, "C:/Downloads/a.zip", "https://host/a"),
+            item(2, "C:/Downloads/b.zip", "https://host/b"),
+        ];
+        assert_eq!(
+            completion_index(
+                &items,
+                "https://cdn/a",
+                Some(std::path::Path::new("c:\\downloads\\A.zip"))
+            ),
+            Some(0)
+        );
+        assert_eq!(completion_index(&items, "https://cdn/a", None), None);
+        assert_eq!(
+            completion_index(
+                &items,
+                "https://host/a",
+                Some(std::path::Path::new("C:/unknown.zip"))
+            ),
+            None
+        );
+    }
+    #[test]
+    fn pending_files_reserve_paths_and_ambiguous_urls_are_not_matched() {
+        let dir = std::env::temp_dir().join(format!("zro-dl-{}", uuid::Uuid::new_v4()));
+        let items = vec![
+            item(1, &dir.join("a.zip").to_string_lossy(), "url"),
+            item(2, "other", "url"),
+        ];
+        assert_eq!(
+            unique_download_path(&dir, "a.zip", &items),
+            dir.join("a (2).zip")
+        );
+        assert_eq!(completion_index(&items, "url", None), None);
+    }
 }

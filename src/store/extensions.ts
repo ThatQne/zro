@@ -127,7 +127,7 @@ export const useExtStore = create<ExtStore>()(
 
       remove: async (extId) => {
         try {
-          await invoke("remove_extension", { extId });
+          if (!await invoke<boolean>("remove_extension", { extId })) return;
           set((s) => ({
             pinned: s.pinned.filter((p) => p !== extId),
           }));

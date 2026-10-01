@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
   PointerSensor, useSensor, useSensors, DragOverEvent, DragMoveEvent, Modifier,
-  closestCenter,
+  closestCenter, pointerWithin,
 } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -108,9 +109,18 @@ export default function Sidebar() {
       setOverId(null);
       setExpanded(false);
     };
-    window.addEventListener("blur", reset);
+    // DOM blur also fires when a sibling page WebView receives focus.
+    // Collapse only when the top-level application window loses focus.
+    let focusGeneration = 0;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload }) => {
+      const generation = ++focusGeneration;
+      if (!payload) void invoke<boolean>("browser_window_active").then((active) => {
+        if (!active && generation === focusGeneration) reset();
+      }).catch(console.error);
+    });
     return () => {
-      window.removeEventListener("blur", reset);
+      ++focusGeneration;
+      void unlisten.then((stop) => stop());
       clearTimeout(openTimer.current);
       clearTimeout(leaveTimer.current);
       clearTimeout(dwellTimer.current);
@@ -162,6 +172,7 @@ export default function Sidebar() {
     clearTimeout(openTimer.current);
     clearTimeout(leaveTimer.current);
     leaveTimer.current = setTimeout(() => {
+      if (flyoutRef.current?.matches(":hover")) return;
       // Re-entry cancels this timer. Do not keep a mouseleave coordinate:
       // page webviews stop delivering pointer events to the chrome document.
       // Dragging, a native menu open, or a live editor (rename / folder
@@ -419,7 +430,11 @@ export default function Sidebar() {
             // closestCenter (not the default rectIntersection) always resolves a
             // target during a reorder — a fast flick no longer ends with a null
             // `over` and silently drops nothing.
-            collisionDetection={closestCenter}
+            collisionDetection={(args) => {
+              const hits = pointerWithin(args);
+              const precise = hits.filter(h => h.id !== "root-zone");
+              return precise.length ? precise : hits.length ? hits : closestCenter(args);
+            }}
             modifiers={[clampToFlyout]}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
@@ -615,7 +630,7 @@ function FolderDropZone({ folderId, isOver, children }: {
   const { setNodeRef } = useDroppable({ id: folderId });
   return (
     <motion.div
-      ref={setNodeRef}
+      ref={(node) => setNodeRef(node?.querySelector<HTMLElement>("[data-folder-header]") ?? node)}
       animate={{ backgroundColor: isOver ? "rgba(79,128,245,0.16)" : "rgba(0,0,0,0)" }}
       transition={{ duration: 0.1 }}
       style={{

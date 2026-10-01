@@ -9,6 +9,18 @@ pub(crate) const PERF_INIT_SCRIPT: &str = r#"
   'use strict';
   if (window.__zroPerf) return;
   window.__zroPerf = true;
+  // Some sites cancel their image context menu. Keep image actions available
+  // without replacing their normal menu for non-image targets.
+  addEventListener('contextmenu', function(e) {
+    if (!e.isTrusted) return;
+    var path=e.composedPath(), img=path.find(function(n){return n&&n.tagName==='IMG';});
+    if(!img) return;
+    var a=path.find(function(n){return n&&n.matches&&n.matches('a[href]');});
+    var data={type:'zro-image-context',src:img.currentSrc||img.src,link:a?a.href:'',page_url:location.href};
+    queueMicrotask(function(){
+      if(e.defaultPrevented&&window.chrome&&chrome.webview) chrome.webview.postMessage(JSON.stringify(data));
+    });
+  },true);
 
   // Capture the actual auxclick: NewWindowRequested arrives after button-up,
   // when GetAsyncKeyState can no longer identify a middle click.

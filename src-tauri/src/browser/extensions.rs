@@ -662,7 +662,27 @@ pub async fn list_extensions(app: AppHandle) -> Result<Vec<ExtensionInfo>, Strin
 }
 
 #[tauri::command]
-pub async fn remove_extension(app: AppHandle, ext_id: String) -> Result<(), String> {
+pub async fn remove_extension(app: AppHandle, ext_id: String) -> Result<bool, String> {
+    let name = load_registry(&app)
+        .iter()
+        .find(|m| m.id == ext_id)
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| ext_id.clone());
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        rfd::MessageDialog::new()
+            .set_title("Remove extension?")
+            .set_description(format!(
+                "Remove {name} from zro? Its extension data may be lost."
+            ))
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show()
+            == rfd::MessageDialogResult::Yes
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if !confirmed {
+        return Ok(false);
+    }
     mutate_extension_native(&app, &ext_id, ExtAction::Remove).await?;
     // Drop our unpacked copy only when it lives inside our extensions dir
     // (never delete a user's own load-unpacked source folder)
@@ -678,7 +698,7 @@ pub async fn remove_extension(app: AppHandle, ext_id: String) -> Result<(), Stri
     reg.retain(|m| m.id != ext_id);
     save_registry(&app, &reg);
     let _ = app.emit("extensions-changed", ());
-    Ok(())
+    Ok(true)
 }
 
 #[tauri::command]
@@ -721,6 +741,33 @@ pub async fn get_extension_icon(app: AppHandle, ext_id: String) -> Result<Option
 // ── Popup window ──────────────────────────────────────────────────────────────
 
 const POPUP_LABEL: &str = "ext-popup";
+
+pub(crate) fn dismiss_popup_on_outside_click(app: &AppHandle) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::{
+            Foundation::POINT,
+            UI::{
+                Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
+                WindowsAndMessaging::{GetAncestor, GetCursorPos, WindowFromPoint, GA_ROOT},
+            },
+        };
+        let Some(popup) = app.get_webview_window(POPUP_LABEL) else {
+            return;
+        };
+        let Ok(hwnd) = popup.hwnd() else {
+            return;
+        };
+        let mut pt = POINT::default();
+        // Synthetic activation during clipboard writes is not a dismissal.
+        if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 || GetCursorPos(&mut pt).is_err() {
+            return;
+        }
+        if GetAncestor(WindowFromPoint(pt), GA_ROOT) != hwnd {
+            let _ = popup.close();
+        }
+    }
+}
 
 /// A real Chrome-style extension popup: a small always-on-top window anchored
 /// under the toolbar icon, not a tab. Closes itself the moment it loses
@@ -795,9 +842,12 @@ pub async fn open_extension_popup(
             let u = url.to_string();
             if u.starts_with("http://") || u.starts_with("https://") {
                 let _ = app_nav.emit("open-url", serde_json::json!({ "url": u }));
-                if let Some(p) = app_nav.get_webview_window(POPUP_LABEL) {
-                    let _ = p.close();
-                }
+                let a = app_nav.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(p) = a.get_webview_window(POPUP_LABEL) {
+                        let _ = p.close();
+                    }
+                });
                 return false;
             }
             true
@@ -850,7 +900,10 @@ pub async fn open_extension_popup(
                             }
                         }
                     }
-                    let _ = closer.close();
+                    // Main-window activation is handled only for real outside
+                    // clicks. Clipboard APIs can transiently activate it.
+                    let app = closer.app_handle().clone();
+                    dismiss_popup_on_outside_click(&app);
                 }
             }
             _ => {}

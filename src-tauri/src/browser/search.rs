@@ -70,6 +70,10 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
   }
 
   var matches = [], curIdx = -1;
+  var nativeMode = false, nativeTotal = 0, nativeIndex = 0;
+  function nativeMessage(action, query) {
+    try { window.chrome.webview.postMessage(JSON.stringify({type:'zro-find',action:action,query:query||''})); } catch (_) {}
+  }
   function clearHL() {
     try { CSS.highlights.delete(HL); CSS.highlights.delete(HLC); } catch (e) {}
     if (typeof clearJump === 'function') clearJump();
@@ -77,6 +81,8 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
   }
   function runFind(q) {
     clearHL();
+    nativeMode = false; nativeTotal = 0;
+    nativeMessage('stop');
     if (!q) return;
     var lc = q.toLowerCase(), ranges = [], nodes = textNodes(), i, idx, from;
     for (i = 0; i < nodes.length && ranges.length < 2000; i++) {
@@ -96,6 +102,8 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
       }
     }
     matches = ranges;
+    // Fall back to Chromium's engine for text in cross-origin frames/PDFs.
+    if (!ranges.length && q) { nativeMode = true; nativeMessage('start',q); }
     if (canHL && ranges.length) {
       var h = new Highlight();
       for (i = 0; i < ranges.length; i++) h.add(ranges[i]);
@@ -115,6 +123,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     hiliteTarget(matches[curIdx], el || document.body);
   }
   function step(d) {
+    if (nativeMode) { nativeMessage(d > 0 ? 'next' : 'prev'); return; }
     if (!matches.length) return;
     curIdx = (curIdx + d + matches.length) % matches.length;
     focusMatch(true); renderCount();
@@ -234,14 +243,14 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     root = host.attachShadow({ mode: 'open' });
     var style = document.createElement('style'); style.textContent = css(); root.appendChild(style);
     var bar = document.createElement('div'); bar.className = 'bar';
-    bar.innerHTML =
-      '<div class="row">' +
-      '<input type="text" placeholder="Find on page" spellcheck="false"/>' +
-      '<span class="count"></span>' +
-      '<button class="btn" data-a="prev" title="Previous (Shift+Enter)">↑</button>' +
-      '<button class="btn" data-a="next" title="Next (Enter)">↓</button>' +
-      '<button class="btn" data-a="close" title="Close (Esc)">✕</button>' +
-      '</div><div class="list"></div>';
+    // Trusted Types sites reject innerHTML assignments. Build inert DOM.
+    var row = document.createElement('div'); row.className = 'row';
+    input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Find on page'; input.spellcheck = false; row.appendChild(input);
+    countEl = document.createElement('span'); countEl.className = 'count'; row.appendChild(countEl);
+    [['prev','↑','Previous (Shift+Enter)'],['next','↓','Next (Enter)'],['close','✕','Close (Esc)']].forEach(function (v) {
+      var b = document.createElement('button'); b.className = 'btn'; b.setAttribute('data-a',v[0]); b.textContent = v[1]; b.title = v[2]; row.appendChild(b);
+    });
+    listEl = document.createElement('div'); listEl.className = 'list'; bar.appendChild(row); bar.appendChild(listEl);
     root.appendChild(bar);
     input = root.querySelector('input');
     countEl = root.querySelector('.count');
@@ -278,19 +287,17 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
   }
   function renderCount() {
     if (!countEl) return;
-    countEl.textContent = matches.length ? (curIdx + 1) + '/' + matches.length : (input.value ? '0/0' : '');
+    countEl.textContent = nativeMode && nativeTotal ? (nativeIndex+1)+'/'+nativeTotal : matches.length ? (curIdx + 1) + '/' + matches.length : (input.value ? '0/0' : '');
   }
   function renderResults(q) {
     resultRecs = rankRecords(q, 12); sel = -1; // records keep their live .el
-    if (!resultRecs.length) { listEl.innerHTML = ''; return; }
-    listEl.innerHTML = resultRecs.map(function (r, i) {
-      return '<div class="it" data-i="' + i + '"><span class="k ' + r.type + '">' + r.type +
-        '</span><span class="t"></span></div>';
-    }).join('');
-    var ts = listEl.querySelectorAll('.t');
-    for (var i = 0; i < resultRecs.length; i++) {
-      var t = resultRecs[i].text; ts[i].textContent = t.length > 90 ? t.slice(0, 90) + '…' : t;
-    }
+    listEl.replaceChildren();
+    resultRecs.forEach(function (r, i) {
+      var it = document.createElement('div'); it.className = 'it'; it.setAttribute('data-i',i);
+      var k = document.createElement('span'); k.className = 'k '+r.type; k.textContent = r.type;
+      var t = document.createElement('span'); t.className = 't'; t.textContent = r.text.length > 90 ? r.text.slice(0,90)+'…' : r.text;
+      it.appendChild(k); it.appendChild(t); listEl.appendChild(it);
+    });
   }
   function moveSel(d) {
     if (!resultRecs.length) return;
@@ -384,6 +391,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
   }
   function open() {
     if (!host) build();
+    if (!host.isConnected) document.documentElement.appendChild(host);
     open_ = true; host.style.display = '';
     var q = (window.getSelection && String(window.getSelection())) || '';
     if (q && q.length < 80) { input.value = q.replace(/\s+/g, ' ').trim(); }
@@ -392,12 +400,14 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     renderCount();
   }
   function close() {
+    nativeMessage('stop'); nativeMode = false;
     open_ = false; clearHL();   // clearHL now also clears the jump wash + border
-    if (listEl) listEl.innerHTML = '';
+    if (listEl) listEl.replaceChildren();
     if (host) host.style.display = 'none';
   }
 
   window.__zroFind = {
+    nativeCount: function(total,index) { if(nativeMode){nativeTotal=total;nativeIndex=index;renderCount();} },
     open: open, close: close, query: query,
     next: function () { step(1); }, prev: function () { step(-1); },
     isOpen: function () { return open_; }
@@ -411,7 +421,90 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
 pub async fn open_find(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(wv) = super::active_webview(&app) {
         let _ = wv.set_focus();
-        let _ = wv.eval("window.__zroFind && window.__zroFind.open();");
+        wv.eval(format!("{};window.__zroFind.open();", SEARCH_INIT_SCRIPT))
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) unsafe fn native_message(
+    core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    value: &serde_json::Value,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Environment15, ICoreWebView2_2, ICoreWebView2_28,
+    };
+    use windows_core::{Interface, HSTRING};
+    let Ok(wv) = core.cast::<ICoreWebView2_28>() else {
+        return;
+    };
+    let Ok(find) = wv.Find() else {
+        return;
+    };
+    match value["action"].as_str().unwrap_or("") {
+        "stop" => {
+            let _ = find.Stop();
+        }
+        "next" => {
+            let _ = find.FindNext();
+            update_native_count(core, &find);
+        }
+        "prev" => {
+            let _ = find.FindPrevious();
+            update_native_count(core, &find);
+        }
+        "start" => {
+            let query = value["query"].as_str().unwrap_or("");
+            if query.is_empty() || query.len() > 512 {
+                return;
+            }
+            let options = core
+                .cast::<ICoreWebView2_2>()
+                .and_then(|c| c.Environment())
+                .and_then(|e| e.cast::<ICoreWebView2Environment15>())
+                .and_then(|e| e.CreateFindOptions());
+            let Ok(options) = options else {
+                return;
+            };
+            let _ = options.SetFindTerm(&HSTRING::from(query));
+            let _ = options.SetShouldHighlightAllMatches(true);
+            let f = find.clone();
+            let c = core.clone();
+            let done = webview2_com::FindStartCompletedHandler::create(Box::new(move |result| {
+                if result.is_ok() {
+                    let mut count = 0;
+                    let mut index = 0;
+                    let _ = f.MatchCount(&mut count);
+                    let _ = f.ActiveMatchIndex(&mut index);
+                    let script = HSTRING::from(format!(
+                        "window.__zroFind&&window.__zroFind.nativeCount({count},{index})"
+                    ));
+                    let cb = webview2_com::ExecuteScriptCompletedHandler::create(Box::new(
+                        |_, _| Ok(()),
+                    ));
+                    let _ = c.ExecuteScript(&script, &cb);
+                }
+                Ok(())
+            }));
+            let _ = find.Start(&options, &done);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(windows)]
+unsafe fn update_native_count(
+    core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    find: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Find,
+) {
+    let mut count = 0;
+    let mut index = 0;
+    let _ = find.MatchCount(&mut count);
+    let _ = find.ActiveMatchIndex(&mut index);
+    let script = windows_core::HSTRING::from(format!(
+        "window.__zroFind&&window.__zroFind.nativeCount({count},{index})"
+    ));
+    let cb = webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let _ = core.ExecuteScript(&script, &cb);
 }

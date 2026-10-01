@@ -52,7 +52,7 @@
   function tetris(random = Math.random, settings = {}) {
     const start = clamp(Number(settings.startLevel) || 1, 1, 10);
     const s = { board: Array.from({ length: 20 }, () => Array(10).fill(0)), bag: [],
-      piece: null, next: null, score: 0, lines: 0, over: false, startLevel: start };
+      piece: null, next: null, held: null, holdUsed: false, score: 0, lines: 0, over: false, startLevel: start };
     const draw = () => {
       if (!s.bag.length) {
         s.bag = [0, 1, 2, 3, 4, 5, 6];
@@ -67,9 +67,17 @@
     s.fits = (matrix, x, y) => matrix.every((row, ry) => row.every((v, rx) => !v ||
       (x + rx >= 0 && x + rx < 10 && y + ry >= 0 && y + ry < 20 && !s.board[y + ry][x + rx])));
     s.spawn = () => {
+      s.holdUsed = false;
       const type = s.next === null ? draw() : s.next;
       s.next = draw(); s.piece = { matrix: shapes[type].map(row => row.slice()), type: type + 1, x: 3, y: 0 };
       s.over = !s.fits(s.piece.matrix, 3, 0);
+    };
+    s.hold = () => {
+      if (s.over || s.holdUsed) return false;
+      const type = s.piece.type - 1, previous = s.held;
+      if (previous === null) s.spawn();
+      else { s.piece = {matrix: shapes[previous].map(row=>row.slice()), type: previous+1, x:3, y:0}; s.over = !s.fits(s.piece.matrix,3,0); }
+      s.held = type; s.holdUsed = true; return true;
     };
     s.move = (dx, dy) => {
       const p = s.piece;
@@ -103,13 +111,19 @@
     { id: 'array', name: 'Memory array', detail: 'Keeps the signal moving', base: 950, growth: 1.20, rate: 52, unlock: 600 },
     { id: 'cluster', name: 'Edge cluster', detail: 'A compact compute room', base: 8200, growth: 1.21, rate: 310, unlock: 5000 },
     { id: 'core', name: 'Quant core', detail: 'Turns heat into momentum', base: 78000, growth: 1.22, rate: 1850, unlock: 45000 },
+    { id: 'lab', name: 'Photon lab', detail: 'Light-speed signal processors', base: 950000, growth: 1.22, rate: 18000, unlock: 600000 },
+    { id: 'station', name: 'Orbital station', detail: 'A network above the clouds', base: 24000000, growth: 1.23, rate: 280000, unlock: 15000000 },
+    { id: 'swarm', name: 'Solar swarm', detail: 'Harvest a star to power the fleet', base: 850000000, growth: 1.24, rate: 6500000, unlock: 500000000 },
+    { id: 'gate', name: 'Deep-space relay', detail: 'Bridge distant colonies', base: 45000000000, growth: 1.25, rate: 230000000, unlock: 25000000000 },
+    { id: 'engine', name: 'Horizon engine', detail: 'Explore the edge of the network', base: 3500000000000, growth: 1.26, rate: 11000000000, unlock: 2000000000000 },
   ];
   const minerUpgrades = [
     { id: 'tap2', name: 'Better switch', detail: 'Tap power ×2', cost: 80, unlock: 40 },
     { id: 'node2', name: 'Node scheduler', detail: 'Ping nodes ×2', cost: 450, unlock: 250 },
     { id: 'all2', name: 'Lean runtime', detail: 'All production ×2', cost: 3000, unlock: 1800 },
     { id: 'tap10', name: 'Parallel input', detail: 'Tap power ×5', cost: 18000, unlock: 10000 },
-    { id: 'all3', name: 'Turboquant pass', detail: 'All production ×3', cost: 160000, unlock: 100000 },
+    { id: 'all3', name: 'Vector pipeline', detail: 'All production ×3', cost: 160000, unlock: 100000 },
+    ...[1e7, 1e9, 1e11, 1e13, 1e15].map((cost,i)=>({id:`network${i}`,name:['Optical mesh','Orbital links','Star map','Warp routing','Event horizon'][i],detail:'All production ×2',cost,unlock:cost/2})),
   ];
   const achievementDefs = [
     { id: 'first', name: 'First signal', detail: 'Tap once', test: s => s.taps >= 1 },
@@ -120,6 +134,9 @@
     { id: 'collector', name: 'One of everything', detail: 'Own every item', test: s => s.items.every(v => v > 0) },
     { id: 'million', name: 'Signal city', detail: 'Produce 1,000,000 cycles', test: s => s.total >= 1000000 },
     { id: 'tap500', name: 'Persistent', detail: 'Tap 500 times', test: s => s.taps >= 500 },
+    ...[1e8,1e10,1e12,1e14,1e16].map((goal,i)=>({id:`frontier${i}`,name:['Beyond the city','Stellar network','Galactic signal','Cosmic web','Infinite horizon'][i],detail:`Produce ${goal.toExponential()} cycles in one run`,test:s=>s.total>=goal})),
+    {id:'reboot',name:'New beginning',detail:'Reboot your network',test:s=>s.reboots>0},
+    {id:'research',name:'Researcher',detail:'Reach research level 5',test:s=>s.research>=5},
   ];
   function factory(data = {}) {
     const s = { energy: Number(data.energy) || 0, total: Number(data.total) || 0, taps: Number(data.taps) || 0,
@@ -127,7 +144,8 @@
       upgrades: Array.isArray(data.upgrades) ? data.upgrades.filter(id => minerUpgrades.some(u => u.id === id)) : [],
       achievements: Array.isArray(data.achievements) ? data.achievements.filter(id => achievementDefs.some(a => a.id === id)) : [],
       lastSaved: Number(data.lastSaved) || Date.now() };
-    s.multiplier = () => (1 + s.achievements.length * .1) * (s.upgrades.includes('all2') ? 2 : 1) * (s.upgrades.includes('all3') ? 3 : 1);
+    s.shards = Math.max(0, Number(data.shards)||0); s.reboots = Math.max(0,Number(data.reboots)||0); s.research = Math.max(0,Number(data.research)||0);
+    s.multiplier = () => (1 + s.achievements.length * .1) * (s.upgrades.includes('all2') ? 2 : 1) * (s.upgrades.includes('all3') ? 3 : 1) * 2**s.upgrades.filter(id=>id.startsWith('network')).length * (1+s.research*.5);
     s.clickPower = () => (s.upgrades.includes('tap2') ? 2 : 1) * (s.upgrades.includes('tap10') ? 5 : 1) * s.multiplier();
     s.rate = () => minerItems.reduce((sum, item, i) => sum + item.rate * s.items[i] * (i === 0 && s.upgrades.includes('node2') ? 2 : 1), 0) * s.multiplier();
     s.cost = i => Math.ceil(minerItems[i].base * minerItems[i].growth ** s.items[i]);
@@ -135,7 +153,38 @@
     s.tick = dt => { const n = s.rate() * clamp(dt, 0, 28800); s.energy += n; s.total += n; return s.check(); };
     s.buy = i => { const cost = s.cost(i); if (s.energy < cost || s.total < minerItems[i].unlock) return false; s.energy -= cost; s.items[i]++; s.check(); return true; };
     s.buyUpgrade = id => { const u = minerUpgrades.find(x => x.id === id); if (!u || s.upgrades.includes(id) || s.energy < u.cost || s.total < u.unlock) return false; s.energy -= u.cost; s.upgrades.push(id); s.check(); return true; };
+    s.rebootGain = () => Math.floor(Math.sqrt(s.total/1e8));
+    s.reboot = () => { const gain = s.rebootGain(); if (!gain) return false; s.shards+=gain; s.reboots++; s.energy=s.total=0; s.items=minerItems.map(()=>0); s.upgrades=[]; s.check(); return true; };
+    s.researchCost = () => 2**Math.min(40,s.research);
+    s.buyResearch = () => { const cost=s.researchCost(); if(s.shards<cost)return false; s.shards-=cost; s.research++; s.check(); return true; };
     s.check = () => { const before = s.achievements.length; for (const a of achievementDefs) if (!s.achievements.includes(a.id) && a.test(s)) s.achievements.push(a.id); return s.achievements.slice(before); };
+    return s;
+  }
+
+  function breakout(data = {}) {
+    const s = { score: 0, best: 0, wave: 1, lives: 3, paddle: 180, ball: {x:180,y:468,vx:0,vy:0}, bricks: [], launched: false, over: false };
+    s.build = () => { s.bricks = Array.from({length:35},(_,i)=>({x:17+(i%7)*47,y:60+Math.floor(i/7)*24,hp:1+Math.floor((s.wave-1)/3)})); };
+    s.serve = () => { s.ball={x:s.paddle,y:468,vx:0,vy:0}; s.launched=false; };
+    s.launch = () => { if(s.over||s.launched)return; s.launched=true; s.ball.vx=120; s.ball.vy=-Math.min(460,240+s.wave*15); };
+    s.step = dt => {
+      dt=clamp(dt,0,1/120); const b=s.ball;
+      if(s.over)return;
+      if(!s.launched){b.x=s.paddle;b.y=468;return;}
+      const oldY=b.y; b.x+=b.vx*dt;b.y+=b.vy*dt;
+      if(b.x<8){b.x=8;b.vx=Math.abs(b.vx);} if(b.x>352){b.x=352;b.vx=-Math.abs(b.vx);}
+      if(b.y<8){b.y=8;b.vy=Math.abs(b.vy);}
+      if(b.vy>0&&oldY<=474&&b.y>=474&&Math.abs(b.x-s.paddle)<47){
+        b.y=474; const angle=clamp((b.x-s.paddle)/47,-.9,.9)*1.1,speed=Math.min(540,Math.hypot(b.vx,b.vy)+8); b.vx=Math.sin(angle)*speed;b.vy=-Math.cos(angle)*speed;
+      }
+      for(let i=0;i<s.bricks.length;i++) { const r=s.bricks[i]; if(b.x+7<r.x||b.x-7>r.x+43||b.y+7<r.y||b.y-7>r.y+18)continue;
+        if(oldY+7<=r.y||oldY-7>=r.y+18)b.vy=-b.vy;else b.vx=-b.vx;
+        r.hp--;if(!r.hp)s.bricks.splice(i,1);s.score+=10*s.wave;s.best=Math.max(s.best,s.score);break;
+      }
+      if(b.y>535){s.lives--;s.over=s.lives<=0;s.serve();}
+      if(!s.bricks.length){s.wave++;s.lives=Math.min(5,s.lives+1);s.build();s.serve();}
+    };
+    s.build();
+    for(const key of ['score','best','wave','lives','paddle','ball','bricks','launched','over']) if(Object.hasOwn(data,key))s[key]=JSON.parse(JSON.stringify(data[key]));
     return s;
   }
 
@@ -185,7 +234,7 @@
     if (!s.moving && s.balls.every(b => b.cue)) { s.racks++; s.rack(); }
   }
 
-  const api = { clamp, physics, tetris, factory, pool, poolStep, poolPockets, shapes, minerItems, minerUpgrades, achievementDefs };
+  const api = { clamp, physics, tetris, factory, breakout, pool, poolStep, poolPockets, shapes, minerItems, minerUpgrades, achievementDefs };
   if (node) module.exports = api;
   else Object.defineProperty(window, '__zroArcade', { value: api, configurable: true });
 })();

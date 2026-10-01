@@ -11,6 +11,10 @@ use super::layout::{compute_rect, parked_rect, sync_bounds};
 use super::perf::PERF_INIT_SCRIPT;
 use super::{active_webview, BrowserState, TabInfo};
 
+// WebView2 construction pumps native messages. A spare and a foreground
+// creation must not enter that nested loop concurrently.
+static CREATE_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Launch an external-protocol URI (roblox-player:, steam:, mailto:, …) via
 /// the OS shell, from zro's own process. The shell resolves and starts the
 /// handler outside any WebView2/zro process job, so the launched app is NOT
@@ -52,6 +56,7 @@ fn background_tab_gesture() -> bool {
 
 /// Per-tab URL trail backing our own back/forward when the renderer's session
 /// history is gone (e.g. lazily restored tabs).
+#[derive(Clone)]
 pub(crate) struct TabHistory {
     urls: Vec<String>,
     current: usize,
@@ -71,7 +76,12 @@ impl TabHistory {
             self.skip_next = false;
             return;
         }
-        if self.urls.last().map(|u| u == &url).unwrap_or(false) {
+        if self
+            .urls
+            .get(self.current)
+            .map(|u| u == &url)
+            .unwrap_or(false)
+        {
             return;
         }
         self.urls.truncate(self.current + 1);
@@ -195,8 +205,7 @@ pub(crate) fn suspend_webview_covering(
     let _ = wv.with_webview(move |pwv| unsafe {
         // The UI may have restored/switched tabs since this work was queued.
         // Never apply a stale background/minimize hide to an active page.
-        if hide_first
-            && !MINIMIZED.load(std::sync::atomic::Ordering::SeqCst)
+        if !MINIMIZED.load(std::sync::atomic::Ordering::SeqCst)
             && !IDLE_ACTIVE_FROZEN.load(std::sync::atomic::Ordering::SeqCst)
         {
             let state = app.state::<Mutex<BrowserState>>();
@@ -241,11 +250,26 @@ pub(crate) fn suspend_webview_covering(
         if wv3.IsSuspended(&mut already).is_ok() && already.as_bool() {
             return;
         }
+        let resume_core = wv3.clone();
         let handler = TrySuspendCompletedHandler::create(Box::new(
             move |err: windows_core::Result<()>, ok: bool| {
                 if err.is_ok() && ok {
                     let state = app.state::<Mutex<BrowserState>>();
-                    state.lock().unwrap().suspended.insert(label.clone());
+                    let mut s = state.lock().unwrap();
+                    let active = s
+                        .active_tab_id
+                        .as_ref()
+                        .map(|id| s.labels.get(id).unwrap_or(id))
+                        == Some(&label);
+                    if active
+                        && !MINIMIZED.load(std::sync::atomic::Ordering::SeqCst)
+                        && !IDLE_ACTIVE_FROZEN.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        drop(s);
+                        let _ = resume_core.Resume();
+                    } else {
+                        s.suspended.insert(label.clone());
+                    }
                 }
                 Ok(())
             },
@@ -548,6 +572,19 @@ fn zro_in_front(app: &AppHandle) -> Option<(bool, bool)> {
     }
 }
 
+#[tauri::command]
+pub async fn browser_window_active(app: AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        zro_in_front(&app).is_some_and(|(front, minimized)| front && !minimized)
+    }
+    #[cfg(not(windows))]
+    {
+        app.get_window("main")
+            .is_some_and(|w| w.is_focused().unwrap_or(false))
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn idle_watch(app: &AppHandle) {
     use std::sync::atomic::Ordering;
@@ -737,13 +774,26 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
         if let Ok(core) = controller.CoreWebView2() {
             let app_links = app.clone();
             let message_label = id.clone();
-            let handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+            let handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
                     let mut message = PWSTR::null();
                     if args.TryGetWebMessageAsString(&mut message).is_ok() {
                         let text = take_pwstr(message);
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if crate::browser::new_tab::handle_message(&app_links, &message_label, &value) {
+                            if value["type"] == "zro-find" {
+                                if let Some(core) = sender { super::search::native_message(&core, &value); }
+                                return Ok(());
+                            } else if value["type"] == "zro-image-context" {
+                                let src = value["src"].as_str().unwrap_or("");
+                                if src.len() <= 65536 && ["https:","http:","data:image/","blob:"].iter().any(|s|src.starts_with(s)) {
+                                    app_links.state::<Mutex<BrowserState>>().lock().unwrap().page_menu_ctx = super::PageMenuCtx {
+                                        src:src.into(),link:value["link"].as_str().unwrap_or("").into(),page_url:value["page_url"].as_str().unwrap_or("").into(),is_image:true,..Default::default()
+                                    };
+                                    let a = app_links.clone();
+                                    tauri::async_runtime::spawn(async move { let a2=a.clone();let _=a.run_on_main_thread(move||super::menus::show_page_menu_now(&a2)); });
+                                }
+                                return Ok(());
+                            } else if crate::browser::new_tab::handle_message(&app_links, &message_label, &value) {
                                 return Ok(());
                             } else if value["type"] == "zro-background-link" {
                                 if let Some(url) = value["url"].as_str().and_then(|u| url::Url::parse(u).ok()) {
@@ -811,9 +861,6 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             if target.IsEditable(&mut b).is_ok() { ctx.is_editable = b.as_bool(); }
                             // Editable fields keep WebView2's own menu — it has
                             // cut/copy/paste/undo we don't reimplement here.
-                            if ctx.is_editable {
-                                return Ok(());
-                            }
                             // Everything else → our custom menu; block the built-in.
                             let _ = args.SetHandled(true);
                             let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE;
@@ -827,6 +874,12 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                 let mut p = PWSTR::null();
                                 if target.SourceUri(&mut p).is_ok() { ctx.src = take_pwstr(p); }
                             }
+                            // Linked images and images in rich editors may be
+                            // reported as links/editable targets rather than IMAGE.
+                            let source_path = ctx.src.split('?').next().unwrap_or("").to_ascii_lowercase();
+                            ctx.is_image |= ctx.src.starts_with("data:image/") ||
+                                [".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".svg"].iter().any(|ext| source_path.ends_with(ext));
+                            if ctx.is_editable && !ctx.is_image { let _ = args.SetHandled(false); return Ok(()); }
                             let mut ps = PWSTR::null();
                             if target.SelectionText(&mut ps).is_ok() { ctx.selection = take_pwstr(ps); }
                             let mut pu = PWSTR::null();
@@ -838,8 +891,9 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             // Pop the menu on the next main-loop turn — never
                             // inside this callback (popup_menu runs a modal loop).
                             let a = app_cm.clone();
-                            let _ = app_cm.run_on_main_thread(move || {
-                                crate::browser::menus::show_page_menu_now(&a);
+                            tauri::async_runtime::spawn(async move {
+                                let a2 = a.clone();
+                                let _ = a.run_on_main_thread(move || crate::browser::menus::show_page_menu_now(&a2));
                             });
                             Ok(())
                         },
@@ -903,7 +957,7 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             let _ = op.add_BytesReceivedChanged(&prog, &mut tok_b);
                             // The op holds the only ref while it downloads; keep the
                             // handler alive for that lifetime (a few bytes per file).
-                            std::mem::forget(prog);
+                            // COM event registration retains the handler.
 
                             // Completion, from the horse's mouth. Tauri's
                             // DownloadEvent::Finished only carries a URL, and the
@@ -954,7 +1008,6 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                 },
                             ));
                             let _ = op.add_StateChanged(&state_h, &mut tok_s);
-                            std::mem::forget(state_h);
 
                             // Hand the live operation to the control commands
                             // (cancel/pause/resume). Resolved by destination
@@ -969,6 +1022,7 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                     crate::browser::downloads::remember_op(id, op.clone());
                                 }
                             }
+                            crate::browser::downloads::settle_operation(&app_dl, &op);
                             Ok(())
                         },
                     ));
@@ -1127,12 +1181,17 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
             // NavigationStarting won't rewrite again — no loop.
             {
                 use webview2_com::NavigationStartingEventHandler;
-                use windows_core::{HSTRING, PWSTR};
+                use windows_core::PWSTR;
+                use std::sync::atomic::Ordering;
 
                 let mut tok_ns = std::mem::zeroed();
+                let navigation_app = app.clone();
+                let navigation_label = id.clone();
+                let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                 let ns_handler = NavigationStartingEventHandler::create(Box::new(
-                    move |sender, args| {
+                    move |_sender, args| {
                         let Some(args) = args else { return Ok(()) };
+                        let serial = generation.fetch_add(1, Ordering::SeqCst)+1;
                         let mut uri = PWSTR::null();
                         if args.Uri(&mut uri).is_err() {
                             return Ok(());
@@ -1145,14 +1204,62 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                         }
                         if let Some(clean) = crate::browser::shields::rewrite_navigation(&url) {
                             let _ = args.SetCancel(true);
-                            if let Some(core) = &sender {
-                                let _ = core.Navigate(&HSTRING::from(clean));
-                            }
+                            // Navigate only after the canceled callback unwinds.
+                            // Re-entering COM here can strand the renderer.
+                            let a = navigation_app.clone();
+                            let l = navigation_label.clone();
+                            let generation = generation.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if generation.load(Ordering::SeqCst) != serial { return; }
+                                if let Some(wv) = a.get_webview(&l) {
+                                    if let Ok(target) = clean.parse() { let _ = wv.navigate(target); }
+                                }
+                            });
                         }
                         Ok(())
                     },
                 ));
                 let _ = core.add_NavigationStarting(&ns_handler, &mut tok_ns);
+            }
+
+            // Failure events must stop spinners; render-process crashes can
+            // recover without restarting the browser's chrome process.
+            {
+                let a = app.clone(); let l = id.clone(); let mut token = 0;
+                let completed = webview2_com::NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                    if let Some(args) = args {
+                        let mut ok = BOOL::default(); let _ = args.IsSuccess(&mut ok);
+                        let mut status = webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS::default();
+                        let _ = args.WebErrorStatus(&mut status);
+                        if !ok.as_bool() && status != webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED {
+                            if let Some(id) = super::tab_of_label(&a,&l) {
+                                a.state::<Mutex<BrowserState>>().lock().unwrap().nav_started.remove(&id);
+                                let _ = a.emit("page-load-failed",serde_json::json!({"id":id,"status":status.0}));
+                            }
+                        }
+                    }
+                    Ok(())
+                }));
+                let _ = core.add_NavigationCompleted(&completed,&mut token);
+                let a = app.clone(); let l = id.clone(); let mut token = 0;
+                let last = std::sync::Arc::new(Mutex::new(None::<std::time::Instant>));
+                let failed = webview2_com::ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let mut kind = webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                    let _ = args.ProcessFailedKind(&mut kind);
+                    let Some(id) = super::tab_of_label(&a,&l) else { return Ok(()) };
+                    eprintln!("[renderer] process failure kind={}",kind.0);
+                    let _ = a.emit("page-load-failed",serde_json::json!({"id":id,"renderer":true}));
+                    if kind == webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                        let mut previous = last.lock().unwrap();
+                        if previous.is_some_and(|t| t.elapsed().as_secs()<30) { return Ok(()); }
+                        *previous=Some(std::time::Instant::now());
+                        let a=a.clone();let l=l.clone();
+                        tauri::async_runtime::spawn(async move { if let Some(wv)=a.get_webview(&l) { let _=wv.reload(); } });
+                    }
+                    Ok(())
+                }));
+                let _ = core.add_ProcessFailed(&failed,&mut token);
             }
 
             // Password autosave + general autofill (stored by WebView2 in the
@@ -1336,7 +1443,11 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                 if let Some(core) = sender {
                     let mut fs = BOOL::default();
                     if core.ContainsFullScreenElement(&mut fs).is_ok() {
-                        crate::browser::overlay::set_fullscreen(&app_fs, fs.as_bool());
+                        let app = app_fs.clone();
+                        let fullscreen = fs.as_bool();
+                        tauri::async_runtime::spawn(async move {
+                            crate::browser::overlay::set_fullscreen(&app, fullscreen);
+                        });
                     }
                 }
                 Ok(())
@@ -1411,6 +1522,8 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                 (0x09, true)  => Some("prev-tab"),       // Ctrl+Shift+Tab
                 (0x22, false) => Some("next-tab"),       // Ctrl+PgDn
                 (0x21, false) => Some("prev-tab"),       // Ctrl+PgUp
+                (0x28, false) => Some("next-tab"),       // Ctrl+Down
+                (0x26, false) => Some("prev-tab"),       // Ctrl+Up
                 (0xBC, false) => Some("settings"),       // Ctrl+,
                 (0x31..=0x39, false) => Some(match vk {  // Ctrl+1..9
                     0x31 => "tab-1", 0x32 => "tab-2", 0x33 => "tab-3",
@@ -1565,7 +1678,6 @@ fn spawn_webview(
         })
         .on_download(move |_wv, event| handle_download(&app_dl, event))
         .initialization_script(PERF_INIT_SCRIPT)
-        .initialization_script(super::new_tab::INIT)
         .on_page_load(move |wv, payload| {
             use tauri::webview::PageLoadEvent;
             let eurl = payload.url().to_string();
@@ -1635,19 +1747,23 @@ fn spawn_webview(
                     // composition windows mid-load, which re-stacks them above
                     // the UI), not just once at the start.
                     if is_active {
-                        crate::browser::overlay::update_ui_region(app);
                         let app2 = app.clone();
+                        let loading_id = tab_id.clone();
                         tauri::async_runtime::spawn(async move {
+                            crate::browser::overlay::update_ui_region(&app2);
                             for ms in [250u64, 700, 1500, 3000] {
                                 tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-                                let a = app2.clone();
-                                let _ = app2.run_on_main_thread(move || {
-                                    // Bounds too — WebView2 sometimes ignores
-                                    // positions set while the renderer spins up,
-                                    // leaving the page over the sidebar area.
-                                    sync_bounds(&a);
-                                    crate::browser::overlay::update_ui_region(&a);
-                                });
+                                let active = app2
+                                    .state::<Mutex<BrowserState>>()
+                                    .lock()
+                                    .unwrap()
+                                    .active_tab_id
+                                    .as_deref()
+                                    == Some(&loading_id);
+                                if !active {
+                                    break;
+                                }
+                                sync_bounds(&app2);
                             }
                         });
                     }
@@ -1676,10 +1792,8 @@ fn spawn_webview(
         builder = builder.initialization_script(crate::browser::shields::FARBLE_JS);
     }
 
-    // In-page search (Reef-inspired): replaces the native Ctrl+F and gives the
-    // AI a ranked page-read tool. Runs in the page process, so it can't stall
-    // the shared UI thread.
-    builder = builder.initialization_script(crate::browser::search::SEARCH_INIT_SCRIPT);
+    // Search is injected on Ctrl+F/AI use. Arcade is mounted by ensure_ready
+    // only on the local new-tab document, not parsed in every website/frame.
 
     let wv = main
         .add_child(builder, pos, size)
@@ -1718,14 +1832,14 @@ fn finish_foreground(
             if let Some(prev_wv) = crate::browser::tab_webview(app, &prev) {
                 let _ = prev_wv.set_bounds(parked_rect(main, layout));
                 let _ = prev_wv.hide();
-                shed_memory(&prev_wv);
             }
         }
     }
     {
         let mut s = state.lock().unwrap();
         s.histories
-            .insert(id.to_string(), TabHistory::new(url.to_string()));
+            .entry(id.to_string())
+            .or_insert_with(|| TabHistory::new(url.to_string()));
         s.tabs.insert(
             id.to_string(),
             TabInfo {
@@ -1822,6 +1936,9 @@ pub(crate) fn ensure_spare(app: &AppHandle) {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
+        let Ok(creation) = CREATE_GATE.try_lock() else {
+            return;
+        };
         let state = app.state::<Mutex<BrowserState>>();
         let label = {
             let mut s = state.lock().unwrap();
@@ -1864,9 +1981,10 @@ pub(crate) fn ensure_spare(app: &AppHandle) {
                     s.spare_url = Some(SPARE_WARM_URL.into());
                 }
                 drop(_flight); // adoption can request a replacement during the settling delay
-                               // Warm != expensive: once the page has settled, freeze the
-                               // spare's renderer. Adoption thaws it — still instant, but the
-                               // idle cost drops from a full renderer to a few tens of MB.
+                drop(creation);
+                // Warm != expensive: once the page has settled, freeze the
+                // spare's renderer. Adoption thaws it — still instant, but the
+                // idle cost drops from a full renderer to a few tens of MB.
                 tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 let still_spare = {
                     let state = app.state::<Mutex<BrowserState>>();
@@ -1900,6 +2018,8 @@ pub async fn create_browser_tab(
     // otherwise a restored YouTube/Gmail tab loads without them once, and the
     // site overwrites the restored state (theatre mode reads `wide` on load).
     super::session_cookies::wait_restored().await;
+
+    let _creation = CREATE_GATE.lock().await;
 
     // Idempotency: webview for this tab already exists → just activate it
     // (or do nothing for a background pre-wake)
@@ -1940,7 +2060,6 @@ pub async fn create_browser_tab(
             if let Some(wv) = app.get_webview(&label) {
                 // The idle spare is kept frozen — thaw before it goes live
                 resume_webview(&app, &label, &wv);
-                let label_for_retry = label.clone();
                 {
                     let mut s = state.lock().unwrap();
                     s.labels.insert(id.clone(), label.clone());
@@ -1951,41 +2070,12 @@ pub async fn create_browser_tab(
                     // Kill the new-tab-page flash: the spare idles on the warm
                     // URL — wipe it to the dark surface in place, THEN
                     // navigate. The user sees dark → target, never Google.
-                    let _ = wv.eval(
-                        "document.documentElement.innerHTML='';\
-                         document.documentElement.style.background='#0c0c0c';",
-                    );
                     let target = super::new_tab::navigation_url(&app, parsed.clone())?;
-                    if let Err(e) = wv.navigate(target.clone()) {
+                    if let Err(e) = wv.navigate(target) {
                         eprintln!("[spare-adopt] navigate failed for {id}: {e}");
                     }
-                    // This is the ONLY caller that resumes a just-suspended
-                    // spare and navigates it to a DIFFERENT url in the same
-                    // tick — Ctrl+T always adopts onto the spare's own warm
-                    // url (already_there=true, skips this branch entirely),
-                    // so a resume/navigate race here was never exercised by
-                    // normal use, only by middle-click / "open in new tab"
-                    // (reported: tab opens, page never loads). Self-heal: if
-                    // no page-load ever started, the navigate() was dropped —
-                    // fire it again once the renderer's had time to wake up.
-                    let app2 = app.clone();
-                    let label2 = label_for_retry.clone();
-                    let id2 = id.clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-                        let started = {
-                            let state = app2.state::<Mutex<BrowserState>>();
-                            let s = state.lock().unwrap();
-                            s.nav_started.contains_key(&id2)
-                        };
-                        if started {
-                            return;
-                        }
-                        if let Some(wv) = app2.get_webview(&label2) {
-                            eprintln!("[spare-adopt] navigate looked dropped for {id2} - retrying");
-                            let _ = wv.navigate(target);
-                        }
-                    });
+                    // No timer-based Navigate retry: fast pages and downloads
+                    // have already completed by then, causing duplicate work.
                 }
                 finish_foreground(&app, &state, &id, &url, &wv, prev_active, layout, &main);
                 if already_there {
@@ -2166,9 +2256,8 @@ pub async fn switch_browser_tab(
                 // Hidden = Chromium stops compositing it → GPU/CPU freed for
                 // the foreground tab (audio keeps playing, like normal browsers)
                 let _ = wv.hide();
-                // Ask Chromium to shed its caches right away — the freeze
-                // sweep only reaches it after a minute of idling
-                shed_memory(&wv);
+                // Retain hot caches for rapid return visits. The idle
+                // suspension path lowers memory after the grace period.
             }
         }
     }
@@ -2252,6 +2341,20 @@ pub async fn navigate_tab(
         if is_active {
             let _ = wv.show();
         }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clone_tab_history(
+    state: tauri::State<'_, Mutex<BrowserState>>,
+    source_id: String,
+    id: String,
+) -> Result<(), String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(mut history) = s.histories.get(&source_id).cloned() {
+        history.skip_next = false;
+        s.histories.insert(id, history);
     }
     Ok(())
 }
@@ -2386,7 +2489,10 @@ pub async fn go_forward(
 #[tauri::command]
 pub async fn reload_tab(app: AppHandle) -> Result<(), String> {
     if let Some(wv) = active_webview(&app) {
+        resume_webview(&app, wv.label(), &wv);
+        let _ = wv.show();
         wv.reload().map_err(|e: tauri::Error| e.to_string())?;
+        sync_bounds(&app);
     }
     Ok(())
 }
@@ -2450,6 +2556,27 @@ mod tests {
         let mut h = TabHistory::new("a".into());
         h.push("a".into()); // reload — no new entry
         assert_eq!(h.back(), None);
+    }
+
+    #[test]
+    fn duplicate_preserves_both_directions_and_branches_independently() {
+        let mut source = TabHistory::new("a".into());
+        source.push("b".into());
+        source.push("c".into());
+        source.back();
+        source.push("b".into());
+        let mut duplicate = source.clone();
+        duplicate.skip_next = false;
+        duplicate.push("b".into());
+        assert_eq!(duplicate.forward(), Some("c".into()));
+        duplicate.push("c".into());
+        assert_eq!(duplicate.back(), Some("b".into()));
+        duplicate.push("b".into());
+        assert_eq!(duplicate.back(), Some("a".into()));
+        duplicate.push("a".into());
+        duplicate.push("d".into());
+        assert_eq!(duplicate.forward(), None);
+        assert_eq!(source.forward(), Some("c".into()));
     }
 
     #[test]

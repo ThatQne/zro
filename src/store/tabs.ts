@@ -275,7 +275,7 @@ interface BrowserStore {
   createTab: (
     url?: string,
     folderId?: string,
-    opts?: { focusUrl?: boolean; background?: boolean }
+    opts?: { focusUrl?: boolean; background?: boolean; duplicateFrom?: string }
   ) => Promise<void>;
   closeTab: (id: string) => Promise<void>;
   closeTabs: (ids: string[]) => Promise<void>;
@@ -402,6 +402,9 @@ export const useBrowserStore = create<BrowserStore>()(
         const normalized = normalizeUrl(target, get().settings.searchEngine);
         const profileId = get().settings.activeProfileId;
         const background = opts?.background ?? false;
+        if (opts?.duplicateFrom) {
+          await invoke("clone_tab_history", { sourceId: opts.duplicateFrom, id });
+        }
         set((s) => ({
           tabs: [
             // Outgoing active tab's idle clock starts now
@@ -783,7 +786,18 @@ export const useBrowserStore = create<BrowserStore>()(
         // user manually saves. The backend dedupes canonical URLs and links
         // the visit into its browsing trail; callers already exclude
         // incognito tabs before reaching this action.
-        invoke("mem_ingest_visit", { url: entry.url, title: entry.title }).catch(() => {});
+        // History is exhaustive; Memory is deliberate. Only retain a page
+        // after a dwell period, never background/preloaded/throwaway pages.
+        const active = get().tabs.find(t => t.id === get().activeTabId);
+        if (active?.url === entry.url && !active.incognito) {
+          const id = active.id;
+          setTimeout(() => {
+            const s = get(), current = s.tabs.find(t => t.id === id);
+            if (!document.hidden && s.activeTabId === id && current?.url === entry.url && !current.incognito && !current.isLoading) {
+              invoke("mem_ingest_visit", { url: entry.url, title: current.title }).catch(() => {});
+            }
+          }, 20_000);
+        }
       },
       removeHistory: (visitedAt, url) =>
         set((s) => ({
@@ -825,12 +839,15 @@ export const useBrowserStore = create<BrowserStore>()(
                   current?.url === url && !current.incognito && !s.tabs.some(t => t.isLoading)) {
                 invoke("index_page", { url, id }).catch(() => {});
               }
-            }, 2500);
+            }, 20_000);
           }
         });
 
         const unsubLoading = await listen<{ id: string }>("page-loading", (e) => {
           get().updateTab(e.payload.id, { isLoading: true, sleepProtected: false });
+        });
+        const unsubFailed = await listen<{ id: string }>("page-load-failed", e => {
+          get().updateTab(e.payload.id, { isLoading: false });
         });
         const unsubNewTabError = await listen<{ id: string }>("new-tab-error", (e) => {
           const tab = get().tabs.find(t => t.id === e.payload.id);
@@ -877,6 +894,7 @@ export const useBrowserStore = create<BrowserStore>()(
         return () => {
           unsubLoaded();
           unsubLoading();
+          unsubFailed();
           unsubNewTabError();
           unsubAudio();
           unsubNav();

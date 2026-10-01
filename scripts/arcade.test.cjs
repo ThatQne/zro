@@ -6,7 +6,7 @@ const { resolve } = require('node:path');
 const source = readFileSync(resolve(__dirname, '../src-tauri/src/browser/arcade_core.js'), 'utf8');
 const context = { module: { exports: {} } };
 vm.runInNewContext(source, context);
-const { physics, tetris, factory, pool, poolStep, minerItems, minerUpgrades, achievementDefs } = context.module.exports;
+const { physics, tetris, factory, breakout, pool, poolStep, minerItems, minerUpgrades, achievementDefs } = context.module.exports;
 
 test('arcade core exits immediately on websites', () => {
   const window = {};
@@ -50,7 +50,7 @@ test('blocks rejects movement after game over and keeps live methods on hydratio
 });
 
 test('miner has clear item progression, upgrades and achievement multipliers', () => {
-  const game = factory(); assert.equal(minerItems.length, 5); assert.equal(minerUpgrades.length, 5); assert.equal(achievementDefs.length, 8);
+  const game = factory(); assert.equal(minerItems.length, 10); assert.equal(minerUpgrades.length, 10); assert.equal(achievementDefs.length, 15);
   const unlocked = game.tap(); assert.ok(unlocked.includes('first')); assert.equal(game.achievements.length, 1);
   game.energy = game.total = 1000;
   assert.equal(game.buy(0), true); assert.equal(game.items[0], 1);
@@ -84,4 +84,28 @@ test('arcade hibernation snapshots remain bounded and use version two', () => {
   });
   assert.equal(snapshot.arcade.version, 2); assert.equal(snapshot.y, 45);
   assert.ok(Array.isArray(snapshot.forms) && Array.isArray(snapshot.scrollers)); assert.ok(JSON.stringify(snapshot).length < 32768);
+});
+
+test('hold can be used once per piece and persists through snapshots', () => {
+  const s=tetris(()=>.5), type=s.piece.type;
+  assert.equal(s.hold(),true);assert.equal(s.held,type-1);assert.equal(s.hold(),false);
+  s.drop();assert.equal(s.holdUsed,false);assert.equal(s.hold(),true);assert.equal(s.piece.type,type);
+  const data=JSON.parse(JSON.stringify(s)), restored=tetris();Object.assign(restored,data);
+  assert.equal(restored.held,s.held);assert.equal(restored.holdUsed,true);assert.equal(restored.hold(),false);
+});
+
+test('miner migrates five-item saves and reboots only earned run production', () => {
+  const s=factory({items:[4,3,2,1,1],energy:1e8,total:1e8});
+  assert.equal(s.items.length,10);assert.ok(Number.isFinite(s.rate()));
+  assert.equal(s.reboot(),true);assert.equal(s.shards,1);assert.equal(s.total,0);assert.equal(s.reboot(),false);
+  assert.equal(s.buyResearch(),true);assert.equal(s.shards,0);assert.equal(s.research,1);
+  const restored=factory(JSON.parse(JSON.stringify(s)));assert.equal(restored.research,1);assert.equal(restored.reboots,1);
+  assert.equal(restored.buyResearch(),false);
+});
+
+test('Breakout loses lives, advances waves, and restores without resetting progress', () => {
+  const s=breakout();s.launch();s.ball.y=540;s.step(1/120);assert.equal(s.lives,2);assert.equal(s.launched,false);
+  s.bricks=[];s.launch();s.step(1/120);assert.equal(s.wave,2);assert.equal(s.lives,3);assert.equal(s.bricks.length,35);
+  s.score=123;const restored=breakout(JSON.parse(JSON.stringify(s)));assert.equal(restored.score,123);assert.equal(restored.wave,2);
+  s.lives=1;s.launch();s.ball.y=540;s.step(1/120);assert.equal(s.over,true);s.launch();assert.equal(s.launched,false);
 });

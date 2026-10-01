@@ -67,11 +67,6 @@ export const useDownloadsStore = create<DownloadsStore>()((set) => ({
 
 // Module-level wiring — mirrors ai.ts: survives panel close and StrictMode
 async function wireDownloads() {
-  // Anything already tracked this session (e.g. UI reloaded via HMR)
-  invoke<DownloadItem[]>("list_downloads")
-    .then((items) => useDownloadsStore.setState({ items }))
-    .catch(() => {});
-
   await listen<{ kind: string; item?: DownloadItem; uri?: string; path?: string; received?: number; total?: number }>(
     "download-event",
     (e) => {
@@ -85,7 +80,7 @@ async function wireDownloads() {
           // Destination path is unique per download, so it identifies the row
           // exactly. Falling back to "any active row" (the old behaviour) meant
           // two concurrent downloads fed each other's progress bars.
-          let idx = path ? s.items.findIndex((i) => i.path === path) : -1;
+          let idx = path ? s.items.findIndex((i) => i.state === "active" && i.path.toLowerCase() === path.toLowerCase()) : -1;
           if (idx < 0 && uri) idx = s.items.findIndex((i) => i.state === "active" && i.url === uri);
           if (idx < 0) return s;
           const now = performance.now();
@@ -127,5 +122,15 @@ async function wireDownloads() {
       });
     }
   );
+  await refreshDownloads();
+}
+export async function refreshDownloads() {
+  try {
+    const items = await invoke<DownloadItem[]>("list_downloads");
+    useDownloadsStore.setState(s => ({ items: items.map(i => {
+      const previous = s.items.find(p => p.id === i.id);
+      return {...previous, ...i};
+    }) }));
+  } catch { /* Leave the last known state on IPC failure. */ }
 }
 wireDownloads();

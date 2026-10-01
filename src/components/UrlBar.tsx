@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Lock, Search, Clock, Globe, CornerDownLeft } from "lucide-react";
 import { inProfile, useBrowserStore, NEW_TAB_URL } from "../store/tabs";
@@ -36,10 +36,6 @@ export default function UrlBar() {
   // Inline autofill: input shows typed text + auto-completed remainder
   // (selected, so the next keystroke replaces it — Chrome behavior)
   const [completion, setCompletion] = useState<string | null>(null);
-  // What the input displayed before the current keystroke — deletion is
-  // "new text is a shrinking prefix of the old", anything else is typing.
-  // (A plain length check fails on the first char after focus-select-all.)
-  const shownRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -90,12 +86,13 @@ export default function UrlBar() {
       setWebSug([]);
       return;
     }
+    let cancelled = false;
     debounceRef.current = setTimeout(() => {
       invoke<string[]>("search_suggest", { q })
-        .then(setWebSug)
-        .catch(() => setWebSug([]));
+        .then((items) => { if (!cancelled) setWebSug(items); })
+        .catch(() => { if (!cancelled) setWebSug([]); });
     }, 150);
-    return () => clearTimeout(debounceRef.current);
+    return () => { cancelled = true; clearTimeout(debounceRef.current); };
   }, [value, editing, dirty]);
 
   // Frecency: every visit contributes, recent ones weigh more (7-day
@@ -245,7 +242,7 @@ export default function UrlBar() {
 
   // The input renders the full completion — select the auto-added remainder
   // so it reads as a suggestion and the next keystroke overwrites it
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!completion || !inputRef.current) return;
     inputRef.current.setSelectionRange(value.length, completion.length);
   }, [completion, value]);
@@ -281,11 +278,11 @@ export default function UrlBar() {
     setDirty(false);
     setValue(editableUrl);
     setCompletion(null);
-    shownRef.current = editableUrl;
     setTimeout(() => inputRef.current?.select(), 0);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.ctrlKey || e.metaKey) return;
     // Tab cycles the suggestion list (Shift+Tab backwards)
     if (e.key === "Tab" && suggestions.length > 0) {
       e.preventDefault();
@@ -363,11 +360,10 @@ export default function UrlBar() {
             setDirty(true);
             setValue(v);
             // Autofill only while typing — deleting must not refill
-            const prev = shownRef.current;
-            const deleting = v.length < prev.length && prev.toLowerCase().startsWith(v.toLowerCase());
-            const c = deleting ? null : completionFor(v);
+            const input = e.nativeEvent as InputEvent;
+            const deleting = input.inputType?.startsWith("delete") ?? false;
+            const c = deleting || input.isComposing ? null : completionFor(v);
             setCompletion(c);
-            shownRef.current = c ?? v;
           }}
           // Aiming at the bar IS intent — mousedown lands before focus, so this
           // survives the case where the same click also re-activates the chrome.
@@ -386,7 +382,7 @@ export default function UrlBar() {
 
         {editing && value && (
           <button
-            onMouseDown={(e) => { e.preventDefault(); setValue(""); setCompletion(null); shownRef.current = ""; }}
+            onMouseDown={(e) => { e.preventDefault(); setValue(""); setCompletion(null); }}
             style={{ fontSize: 10, color: "#555", background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
           >
             ✕

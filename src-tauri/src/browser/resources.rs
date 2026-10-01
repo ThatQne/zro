@@ -7,6 +7,75 @@ use std::sync::{
 use std::time::Instant;
 
 static BACKGROUND_ALLOWED: AtomicBool = AtomicBool::new(true);
+
+/// Keep at most one native heartbeat outstanding. Log only prolonged stalls;
+/// no page URLs, text, or regular disk writes are collected.
+pub(crate) fn watch_ui(app: tauri::AppHandle) {
+    use tauri::Manager;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            if app
+                .run_on_main_thread(move || {
+                    let _ = tx.send(());
+                })
+                .is_err()
+            {
+                break;
+            }
+            if tokio::time::timeout(std::time::Duration::from_secs(5), &mut rx)
+                .await
+                .is_ok()
+            {
+                continue;
+            }
+            let state = app.state::<Mutex<super::BrowserState>>();
+            let summary = match state.try_lock() {
+                Ok(s) => format!(
+                    "tabs={} suspended={} hidden={} resizing={}",
+                    s.tabs.len(),
+                    s.suspended.len(),
+                    s.page_hidden,
+                    s.resizing
+                ),
+                Err(_) => "browser_state_locked=true".into(),
+            };
+            let memory = memory_sample()
+                .map(|s| format!("available_mb={} total_mb={}", s.available_mb, s.total_mb))
+                .unwrap_or_else(|_| "memory_unavailable".into());
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("hang.log");
+                let append = std::fs::metadata(&path)
+                    .map(|m| m.len() < 131072)
+                    .unwrap_or(true);
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(append)
+                    .truncate(!append)
+                    .open(path)
+                {
+                    use std::io::Write;
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let _ = writeln!(
+                        file,
+                        "{timestamp} version={} ui_stall_over_5s {summary} {memory}",
+                        env!("CARGO_PKG_VERSION")
+                    );
+                }
+            }
+            // A blocked UI gets no additional queued probes or repeated writes.
+            if rx.await.is_err() {
+                break;
+            }
+        }
+    });
+}
 static TRACING: AtomicBool = AtomicBool::new(false);
 static TIMINGS: LazyLock<Mutex<HashMap<&'static str, VecDeque<f64>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));

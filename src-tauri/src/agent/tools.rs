@@ -238,9 +238,10 @@ pub(crate) async fn run_tool(app: &AppHandle, name: &str, args: &serde_json::Val
         "search_page" => {
             let q = args["query"].as_str().unwrap_or("");
             let limit = args["limit"].as_u64().unwrap_or(20).min(50);
-            // Reef-inspired in-page index, injected into every tab
+            // Load the page index only when requested.
             let js = format!(
-                "JSON.stringify((window.__zroFind && window.__zroFind.query({}, {})) || [])",
+                "{};JSON.stringify((window.__zroFind && window.__zroFind.query({}, {})) || [])",
+                crate::browser::search::SEARCH_INIT_SCRIPT,
                 js_str(q),
                 limit
             );

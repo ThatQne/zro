@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { X, Download, FolderOpen, FileCheck2, FileX2, Trash2, ExternalLink, Puzzle, Check, Pause, Play, XCircle, ListX } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useDownloadsStore, DownloadItem } from "../store/downloads";
+import { useDownloadsStore, DownloadItem, refreshDownloads } from "../store/downloads";
 import { useBrowserStore } from "../store/tabs";
 import { useExtStore } from "../store/extensions";
 
@@ -52,6 +52,7 @@ export default function DownloadsPanel({ onClose }: Props) {
   const extError = extId ? autoErrors[extId] : undefined;
 
   useEffect(() => { markSeen(); }, [items.length, markSeen]);
+  useEffect(() => { refreshDownloads(); }, []);
   // No button — a Web Store detail page installs itself automatically.
   useEffect(() => { if (extId) autoInstall(extId); }, [extId, autoInstall]);
 

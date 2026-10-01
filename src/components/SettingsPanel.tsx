@@ -1047,7 +1047,7 @@ export function ClearDataSection() {
     });
   }
 
-  const effectiveKinds = [...kinds].filter((k) => !(scope === "site" && k === "cache"));
+  const effectiveKinds = [...kinds];
   const disabled = effectiveKinds.length === 0 || (scope === "site" && !host);
 
   async function doClear() {
@@ -1086,13 +1086,13 @@ export function ClearDataSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 9 }}>
         {([
           ["cookies", "Cookies", false],
-          ["cache", "Cache", scope === "site"],
+          ["cache", scope === "site" ? "Site cache + fresh reload" : "Cache", false],
           ["storage", "Site data (localStorage, IndexedDB…)", false],
         ] as const).map(([key, label, off]) => (
           <label
             key={key}
             style={{ display: "flex", alignItems: "center", gap: 6, cursor: off ? "default" : "pointer", opacity: off ? 0.35 : 1, fontSize: 10, color: "#888" }}
-            title={off ? "WebView2 can only clear the cache for all sites" : undefined}
+            title={key === "cache" && scope === "site" ? "Clears this origin's service-worker cache and reloads without HTTP cache. Full disk-cache eviction is profile-wide." : undefined}
           >
             <span
               onClick={() => !off && toggleKind(key)}

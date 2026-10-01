@@ -51,6 +51,7 @@ pub enum EdgeKind {
     Semantic,
     Domain,
     Temporal,
+    Keyword,
 }
 
 impl EdgeKind {
@@ -60,6 +61,7 @@ impl EdgeKind {
             EdgeKind::Manual => 4,
             EdgeKind::Tag => 3,
             EdgeKind::Semantic => 2,
+            EdgeKind::Keyword => 2,
             EdgeKind::Domain => 1,
             EdgeKind::Temporal => 0,
         }
@@ -105,6 +107,8 @@ pub struct MemGraph {
     pub edges: Vec<MemEdge>,
     pub dim: usize,
     pub loaded: bool,
+    keyword_cache: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    links_refreshed: bool,
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -197,6 +201,8 @@ impl<'de> Deserialize<'de> for MemGraph {
             edges: w.edges,
             dim: w.dim,
             loaded: true,
+            keyword_cache: Default::default(),
+            links_refreshed: false,
         })
     }
 }
@@ -305,6 +311,39 @@ fn autolink(g: &mut MemGraph, idx: usize) {
 /// the single page-to-page trail that led through a browsing session.
 fn autolink_structural(g: &mut MemGraph, idx: usize) {
     let me = g.nodes[idx].clone();
+    // Cache tokenization: adding one note should not repeatedly tokenize the
+    // entire graph. Refresh the edited node and lazily fill missing entries.
+    g.keyword_cache.insert(me.id.clone(), keywords(&me));
+    let live: std::collections::HashSet<_> = g.nodes.iter().map(|n| n.id.clone()).collect();
+    g.keyword_cache.retain(|id, _| live.contains(id));
+    for n in &g.nodes {
+        g.keyword_cache
+            .entry(n.id.clone())
+            .or_insert_with(|| keywords(n));
+    }
+    // Sparse, explainable local links, independent of an embedding server.
+    // Two substantive shared terms and >=25% overlap are required; never
+    // connect notes merely because both contain common UI/navigation words.
+    let mine = &g.keyword_cache[&me.id];
+    if mine.len() >= 2 {
+        let mut related: Vec<_> = g
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != idx)
+            .filter_map(|(_, n)| {
+                let other = &g.keyword_cache[&n.id];
+                let shared = mine.intersection(other).count();
+                let union = mine.len() + other.len() - shared;
+                let overlap = shared as f32 / union.max(1) as f32;
+                (shared >= 2 && overlap >= 0.25).then(|| (n.id.clone(), overlap))
+            })
+            .collect();
+        related.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (id, score) in related.into_iter().take(3) {
+            upsert_edge(g, &me.id, &id, EdgeKind::Keyword, score);
+        }
+    }
     let my_tags: std::collections::HashSet<String> = me
         .tags
         .iter()
@@ -391,6 +430,64 @@ fn autolink_structural(g: &mut MemGraph, idx: usize) {
         if let Some(id) = previous {
             upsert_edge(g, &me.id, &id, EdgeKind::Temporal, 0.65);
         }
+    }
+}
+
+fn keywords(n: &MemNode) -> std::collections::HashSet<String> {
+    const STOP: &str = "this that with from have your about there their when what where which these those they them into more some just page home search website browser login sign account welcome video youtube google roblox https http www html com";
+    format!(
+        "{} {}",
+        n.title,
+        n.body.chars().take(2000).collect::<String>()
+    )
+    .to_lowercase()
+    .split(|c: char| !c.is_alphanumeric())
+    .filter(|w| w.len() >= 4 && !STOP.split_whitespace().any(|s| s == *w))
+    .take(128)
+    .map(String::from)
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn note(id: &str, title: &str) -> MemNode {
+        MemNode {
+            id: id.into(),
+            kind: NodeKind::Note,
+            title: title.into(),
+            body: String::new(),
+            url: None,
+            image: None,
+            created: 0,
+            updated: 0,
+            done: false,
+            pinned: false,
+            visits: 0,
+            tags: vec![],
+            embed: None,
+        }
+    }
+    #[test]
+    fn local_links_require_shared_substantive_terms_and_update_on_edit() {
+        let mut g = MemGraph::default();
+        g.nodes = vec![
+            note("a", "Rust browser memory allocator"),
+            note("b", "Browser memory allocator benchmark"),
+            note("c", "Welcome to your home page"),
+            note("d", "Welcome to your website page"),
+        ];
+        autolink_structural(&mut g, 0);
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.a == "a" && e.b == "b" && e.kind == EdgeKind::Keyword));
+        assert!(!g.edges.iter().any(|e| e.a == "c" || e.b == "c"));
+        g.nodes[0].title = "Orchid greenhouse watering".into();
+        g.edges.clear();
+        autolink_structural(&mut g, 0);
+        assert!(g.edges.is_empty());
+        assert!(keywords(&g.nodes[0]).contains("orchid"));
     }
 }
 
@@ -483,12 +580,30 @@ fn node_view(n: &MemNode) -> serde_json::Value {
 // ── commands ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn mem_list(
+pub async fn mem_list(
     app: AppHandle,
     state: tauri::State<'_, Mutex<MemGraph>>,
 ) -> Result<serde_json::Value, String> {
     let mut g = state.lock().unwrap();
     ensure_loaded(&app, &mut g);
+    if !g.links_refreshed {
+        // Backfill useful connections for existing saved knowledge too. Keep
+        // this one-off pass bounded, on the async command thread, not startup.
+        let indices: Vec<_> = g
+            .nodes
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, n)| n.kind != NodeKind::Visit)
+            .take(240)
+            .map(|(i, _)| i)
+            .collect();
+        for idx in indices {
+            autolink_structural(&mut g, idx);
+        }
+        g.links_refreshed = true;
+        save(&app, &g);
+    }
     let nodes: Vec<serde_json::Value> = g.nodes.iter().map(node_view).collect();
     Ok(serde_json::json!({ "nodes": nodes, "edges": g.edges }))
 }
@@ -709,6 +824,20 @@ pub async fn mem_ingest_visit(
         return Ok(());
     }
     let url = canonical_memory_url(&url);
+    let Ok(parsed) = url::Url::parse(&url) else {
+        return Ok(());
+    };
+    let path = parsed.path().trim_matches('/').to_ascii_lowercase();
+    if !matches!(parsed.scheme(), "http" | "https")
+        || path.is_empty()
+        || ["login", "signin", "sign-in", "auth", "search", "results"]
+            .iter()
+            .any(|p| path.split('/').any(|s| s == *p))
+        || title.trim().len() < 4
+        || title.to_ascii_lowercase().contains("not available")
+    {
+        return Ok(());
+    }
     // Existing visit? bump and bail (no embed cost).
     {
         let mut g = state.lock().unwrap();

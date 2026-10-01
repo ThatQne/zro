@@ -45,6 +45,19 @@ pub fn url_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> 
 /// Forward a URL (from launch args / a second instance) to the UI to open as a
 /// tab. Best-effort — dropped if the frontend isn't listening yet.
 pub fn open_url(app: &AppHandle, url: &str) {
+    static RECENT: std::sync::Mutex<Vec<(String, std::time::Instant)>> =
+        std::sync::Mutex::new(Vec::new());
+    {
+        let mut recent = RECENT.lock().unwrap();
+        recent.retain(|(_, t)| t.elapsed().as_secs_f32() < 2.0);
+        if recent.iter().any(|(u, _)| u == url) {
+            return;
+        }
+        if recent.len() >= 32 {
+            recent.remove(0);
+        }
+        recent.push((url.to_owned(), std::time::Instant::now()));
+    }
     // Same shape the popup/new-window path uses so the one frontend listener
     // handles both — `external` is what tells them apart: there is no source
     // tab here, so the new tab must not inherit the active tab's folder.

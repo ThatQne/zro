@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -24,6 +24,7 @@ const EDGE_COLOR: Record<MemEdge["kind"], string> = {
   semantic: "rgba(79,128,245,0.50)",
   domain: "rgba(130,130,130,0.30)",
   temporal: "rgba(130,130,130,0.16)",
+  keyword: "rgba(95,179,163,0.50)",
 };
 const GRAPH_CAP = 240;
 
@@ -129,9 +130,9 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  function onNodeClick(id: string) {
+  const onNodeClick = useCallback((id: string) => {
     setSel((s) => (s === id ? null : id));
-  }
+  }, []);
 
   // List ordering: search → score order; else pinned + todos + recent.
   const listNodes = useMemo(() => {
@@ -523,7 +524,8 @@ function GraphView({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const pos = useRef<Map<string, P>>(new Map());
-  const drag = useRef<{ id: string; ox: number; oy: number } | null>(null);
+  const drag = useRef<{ id: string | null; ox: number; oy: number; startX: number; startY: number } | null>(null);
+  const camera = useRef({ x: 0, y: 0, zoom: 1 });
   const raf = useRef(0);
   const size = useRef({ w: 460, h: 400 });
 
@@ -538,7 +540,7 @@ function GraphView({
         if (matches.has(e.a)) nb.add(e.b);
         if (matches.has(e.b)) nb.add(e.a);
       }
-      keep = nodes.filter((n) => nb.has(n.id));
+      keep = nodes.filter((n) => nb.has(n.id)).slice(0, GRAPH_CAP);
     } else {
       const weight = (n: MemNode) =>
         (n.pinned ? 100 : 0) + (n.kind !== "visit" ? 50 : 0) + n.visits + n.updated / 1e12;
@@ -579,9 +581,13 @@ function GraphView({
     ro.observe(wrap);
 
     const ctx = canvas.getContext("2d")!;
+    let frames = 0;
+    const wake = () => { frames = 0; if (!raf.current && !document.hidden) raf.current = requestAnimationFrame(step); };
     const radius = (n: MemNode) => (n.pinned ? 7 : 0) + 3.5 + Math.min(4, n.visits * 0.4) + (n.kind !== "visit" ? 1.5 : 0);
 
     const step = () => {
+      raf.current = 0;
+      if (document.hidden) return;
       const { w, h } = size.current;
       const P = pos.current;
       // repulsion
@@ -627,6 +633,8 @@ function GraphView({
       // draw
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
+      const c = camera.current;
+      ctx.setTransform(dpr*c.zoom, 0, 0, dpr*c.zoom, dpr*c.x, dpr*c.y);
       const focus = sel;
       const focusNb = new Set<string>();
       if (focus) for (const e of gEdges) { if (e.a === focus) focusNb.add(e.b); if (e.b === focus) focusNb.add(e.a); }
@@ -664,9 +672,8 @@ function GraphView({
         }
       }
       ctx.globalAlpha = 1;
-      // Keep simulating (cheap); nodes settle via damping.
-      raf.current = requestAnimationFrame(step);
-      void moving;
+      // Stop idle O(n²) work. Interactions/data/resize wake the simulation.
+      if (++frames < 240 && (frames < 30 || moving > 0.5 || drag.current)) raf.current = requestAnimationFrame(step);
     };
     raf.current = requestAnimationFrame(step);
 
@@ -681,40 +688,65 @@ function GraphView({
     };
     const localXY = (e: PointerEvent) => {
       const r = canvas.getBoundingClientRect();
-      return { x: e.clientX - r.left, y: e.clientY - r.top };
+      const c = camera.current;
+      return { x: (e.clientX - r.left-c.x)/c.zoom, y: (e.clientY - r.top-c.y)/c.zoom };
     };
     const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
       const { x, y } = localXY(e);
       const hit = nodeAt(x, y);
       if (hit) {
         const p = pos.current.get(hit.id)!;
-        drag.current = { id: hit.id, ox: p.x - x, oy: p.y - y };
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        drag.current = { id: hit.id, ox: p.x - x, oy: p.y - y, startX: e.clientX, startY: e.clientY };
+      } else {
+        drag.current = { id: null, ox: camera.current.x, oy: camera.current.y, startX: e.clientX, startY: e.clientY };
       }
+      canvas.setPointerCapture(e.pointerId); wake();
     };
     const onMove = (e: PointerEvent) => {
       const { x, y } = localXY(e);
-      if (!drag.current) { canvas.style.cursor = nodeAt(x, y) ? "pointer" : "default"; return; }
+      if (!drag.current) { canvas.style.cursor = nodeAt(x, y) ? "pointer" : "grab"; return; }
+      if (!drag.current.id) {
+        camera.current.x = drag.current.ox + e.clientX-drag.current.startX;
+        camera.current.y = drag.current.oy + e.clientY-drag.current.startY;
+        wake(); return;
+      }
       const p = pos.current.get(drag.current.id)!;
       p.x = x + drag.current.ox; p.y = y + drag.current.oy; p.vx = 0; p.vy = 0;
+      wake();
     };
     const onUp = (e: PointerEvent) => {
       if (drag.current) {
-        const start = pos.current.get(drag.current.id)!;
-        const { x, y } = localXY(e);
-        const moved = (start.x - (x + drag.current.ox)) ** 2 + (start.y - (y + drag.current.oy)) ** 2;
+        const moved = (e.clientX-drag.current.startX)**2 + (e.clientY-drag.current.startY)**2;
         const id = drag.current.id;
         drag.current = null;
-        if (moved < 9) onSelect(id); // treat as click
+        if (id && moved < 9 && e.type !== "pointercancel") onSelect(id);
+        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+        wake();
       }
     };
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("pointercancel", onUp);
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = canvas.getBoundingClientRect(), c = camera.current, mx = e.clientX-r.left, my = e.clientY-r.top;
+      const z = Math.max(0.25, Math.min(3, c.zoom*Math.exp(-e.deltaY*0.001)));
+      c.x = mx-(mx-c.x)*z/c.zoom; c.y = my-(my-c.y)*z/c.zoom; c.zoom = z; wake();
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    const onVisible = () => wake();
+    document.addEventListener("visibilitychange", onVisible);
+    const wakeResize = new ResizeObserver(wake); wakeResize.observe(wrap);
 
     return () => {
       cancelAnimationFrame(raf.current);
       ro.disconnect();
+      wakeResize.disconnect(); drag.current = null; raf.current = 0;
+      canvas.removeEventListener("wheel", onWheel);
+      document.removeEventListener("visibilitychange", onVisible);
+      canvas.removeEventListener("pointercancel", onUp);
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
@@ -724,6 +756,7 @@ function GraphView({
   return (
     <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative" }}>
       <canvas ref={canvasRef} style={{ display: "block" }} />
+      <div style={{position:"absolute",top:8,left:8,color:"#777",fontSize:10,pointerEvents:"none"}}>Drag empty space to pan · scroll to zoom</div>
       {gNodes.length === 0 && (
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#444", fontSize: 12 }}>
           Nothing to graph yet.

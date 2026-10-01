@@ -143,6 +143,8 @@ pub fn run() {
             browser::get_tab_state,
             browser::set_tab_muted,
             browser::push_to_history,
+            browser::clone_tab_history,
+            browser::browser_window_active,
             browser::get_memory_info,
             browser::get_disk_usage,
             browser::show_tab_menu,
@@ -297,10 +299,8 @@ pub fn run() {
                         let app = app_handle.clone();
                         tauri::async_runtime::spawn(async move {
                             browser::tabs::on_user_active(&app);
+                            browser::extensions::dismiss_popup_on_outside_click(&app);
                         });
-                        if let Some(popup) = app_handle.get_webview_window("ext-popup") {
-                            let _ = popup.close();
-                        }
                     }
                     _ => {}
                 }
@@ -325,6 +325,7 @@ pub fn run() {
             // Idle watchdog: whole-machine idle past the threshold → freeze
             // every renderer (the all-night fan fix). First input thaws.
             browser::tabs::idle_watch(app.handle());
+            browser::resources::watch_ui(app.handle().clone());
 
             // Shields: load block lists + build the adblock engine (Brave's
             // engine, native) — request interception is wired per-webview.

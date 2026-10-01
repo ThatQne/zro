@@ -38,7 +38,8 @@ const harness = `
     assert.equal(await page.locator('[data-game]').count(), 4);
     assert.deepEqual(await page.evaluate(() => __work.messages.map(x => x.type)), ['zro-arcade-load']);
     assert.equal(await page.locator('[data-game="ricochet"]').count(), 0);
-    assert.equal(await page.locator('[data-game="pool"]').count(), 1);
+    assert.equal(await page.locator('[data-game="pool"]').count(), 0);
+    assert.equal(await page.locator('[data-game="breakout"]').count(), 1);
     assert.equal(await page.locator('.card-icon svg').count(), 4, 'Cards use SVG icons');
     assert.match(await page.evaluate(() => getComputedStyle(document.documentElement).fontFamily), /Outfit/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
@@ -47,9 +48,12 @@ const harness = `
 
     await page.locator('[data-game="blocks"]').click();
     assert.equal(await page.locator('#game-settings').isVisible(), true);
-    assert.equal(await page.locator('#controls button svg').count(), 5, 'Game controls use SVG icons');
-    await page.locator('canvas').click({ position: { x: 100, y: 100 } });
-    assert.equal(await page.locator('canvas').evaluate(c => getComputedStyle(c).outlineStyle), 'none');
+    assert.equal(await page.locator('#controls button svg').count(), 6, 'Game controls use SVG icons');
+    assert.equal(await page.locator('#next-piece').count(), 1);
+    await page.locator('#surface canvas').click({ position: { x: 100, y: 100 } });
+    await page.keyboard.press('c');
+    assert.notEqual((await page.evaluate(()=>window.__zroArcadeSave())).games.blocks.held, null);
+    assert.equal(await page.locator('#surface canvas').evaluate(c => getComputedStyle(c).outlineStyle), 'none');
     await page.locator('#game-settings').click();
     assert.equal(await page.locator('#settings-dialog').evaluate(d => d.open), true);
     await page.locator('[data-setting="grid"]').click();
@@ -95,14 +99,11 @@ const harness = `
     await page.waitForTimeout(4500); assert.deepEqual(await work(), { frames: 0, timers: 0 });
     await page.locator('#back').click();
 
-    await page.locator('[data-game="pool"]').click();
-    assert.equal(await page.locator('canvas').getAttribute('width'), '640');
-    const rect = await page.locator('canvas').boundingBox();
-    const at = (x,y) => ({ x: rect.x + x / 640 * rect.width, y: rect.y + y / 400 * rect.height });
-    const cue = at(175,200), pull = at(90,250);
-    await page.mouse.move(cue.x,cue.y); await page.mouse.down(); await page.mouse.move(pull.x,pull.y,{steps:8}); await page.mouse.up();
-    assert.equal((await work()).frames, 1); assert.match(await page.locator('#detail').textContent(), /1 shots/);
-    await page.screenshot({ path: resolve(output, 'pool.png') });
+    await page.locator('[data-game="breakout"]').click();
+    assert.equal(await page.locator('canvas').getAttribute('width'), '360');
+    await page.keyboard.press('Space');
+    assert.equal((await work()).frames, 1); assert.match(await page.locator('#detail').textContent(), /3 lives/);
+    await page.screenshot({ path: resolve(output, 'breakout.png') });
     await page.evaluate(() => window.dispatchEvent(new Event('blur'))); assert.deepEqual(await work(), { frames: 0, timers: 0 });
 
     // Disk-style state load reconstructs methods and keeps miner inventory/settings.
@@ -119,6 +120,6 @@ const harness = `
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: resolve(output, 'menu-narrow.png'), fullPage: true });
     assert.deepEqual(errors, []); assert.deepEqual(requests, [localUrl, localUrl], 'Arcade makes no requests beyond its local document');
-    console.log('Arcade UI passed: zro theme, SVG controls, settings, miner progression, merge boundaries, pool, persistence, idle cancellation, and responsive layout.');
+    console.log('Arcade UI passed: zro theme, SVG controls, settings, hold/next, miner progression, merge boundaries, Breakout, persistence, idle cancellation, and responsive layout.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

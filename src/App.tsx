@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
@@ -13,17 +13,18 @@ import { useExtStore } from "./store/extensions";
 import { trackOverlay } from "./store/overlays";
 import Sidebar from "./components/Sidebar";
 import UrlBar from "./components/UrlBar";
-import StatsPanel from "./components/StatsPanel";
-import AiPanel from "./components/AiPanel";
-import HistoryPanel from "./components/HistoryPanel";
-import SettingsPanel from "./components/SettingsPanel";
-import ShieldPanel from "./components/ShieldPanel";
-import DownloadsPanel from "./components/DownloadsPanel";
 import DownloadToast from "./components/DownloadToast";
 import IncognitoLock from "./components/IncognitoLock";
 import UpdateBanner from "./components/UpdateBanner";
-import MemoryPanel from "./components/MemoryPanel";
 import logo from "../logo.png";
+
+const StatsPanel = lazy(() => import("./components/StatsPanel"));
+const AiPanel = lazy(() => import("./components/AiPanel"));
+const HistoryPanel = lazy(() => import("./components/HistoryPanel"));
+const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
+const ShieldPanel = lazy(() => import("./components/ShieldPanel"));
+const DownloadsPanel = lazy(() => import("./components/DownloadsPanel"));
+const MemoryPanel = lazy(() => import("./components/MemoryPanel"));
 
 const CORNER_INSET = 12; // keep webview away from rounded window corners
 const BAR_H = 40;        // single top row height
@@ -168,6 +169,8 @@ export default function App() {
       if (k === "tab") return e.shiftKey ? "prev-tab" : "next-tab";
       if (k === "pagedown") return "next-tab";
       if (k === "pageup") return "prev-tab";
+      if (k === "arrowdown") return "next-tab";
+      if (k === "arrowup") return "prev-tab";
       if (/^[1-9]$/.test(k)) return `tab-${k}`;
       return null;
     }
@@ -239,7 +242,7 @@ export default function App() {
       else if (action === "tab:duplicate") {
         for (const id of ctx) {
           const t = s.tabs.find((x) => x.id === id);
-          if (t) await s.createTab(t.url, t.folderId);
+          if (t) await s.createTab(t.url, t.folderId, { duplicateFrom: id });
         }
       } else if (action === "tab:copy-url") {
         const urls = ctx
@@ -503,6 +506,7 @@ export default function App() {
         <AnimatePresence>
           {panel && (
             <PanelOverlay key={panel} kind={panel}>
+              <Suspense fallback={<div style={{width:300,padding:20,color:"#888",background:"#0f0f0f"}}>Loading…</div>}>
               {panel === "stats" && <StatsPanel onClose={() => setPanel(null)} />}
               {panel === "ai" && <AiPanel onClose={() => setPanel(null)} />}
               {panel === "history" && <HistoryPanel onClose={() => setPanel(null)} />}
@@ -510,6 +514,7 @@ export default function App() {
               {panel === "settings" && <SettingsPanel onClose={() => setPanel(null)} />}
               {panel === "shield" && <ShieldPanel onClose={() => setPanel(null)} />}
               {panel === "downloads" && <DownloadsPanel onClose={() => setPanel(null)} />}
+              </Suspense>
             </PanelOverlay>
           )}
         </AnimatePresence>

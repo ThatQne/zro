@@ -5,7 +5,7 @@ messages have a standards-valid source URI; scripts return immediately on other
 pages. No external assets, network calls, packages, audio, or autoplay.
 
 Games: Blocks (Tetris-style), Cycle Miner (item/upgrade incremental game), Merge
-Drop (matching-circle physics), and Pool. No gambling mechanics. The page uses
+Drop (matching-circle physics), and Breakout. No gambling mechanics. The page uses
 the app's Outfit typography, restrained blue accent, and inline SVG controls.
 Keyboard instructions and equivalent pointer buttons are provided. The logo can
 be dragged and flung; resizing returns it to its origin.
@@ -18,17 +18,20 @@ Progress
   from replacing newer progress from another tab. Payloads are schema-filtered
   and limited to 128 KiB before writing.
 - Cycle Miner grants saved offline production for at most 8 hours. Its hardware,
-  upgrades, totals, and achievements are restored exactly.
+  ten hardware tiers, upgrades, totals, achievements, reboot shards and permanent
+  research survive restarts. Existing five-tier saves migrate automatically.
+- Blocks has next/hold previews, once-per-piece hold (C / Shift), and clearer
+  optional grid lines. Merge radii are shared by display, physics and save restore.
 
 Resource policy
 - Menu: no canvas, animation loop, or timer. Game data is retained, not rendered.
 - Only the selected game runs. Blur, hidden document, pagehide, and manual pause
   cancel scheduled work. Returning requires Resume; no background catch-up.
 - Cycle Miner: one 1-second timeout after the first item, no animation frames.
-- Pool: frames only while balls move. Empty or settled Merge Drop has no frame
+- Breakout: frames only while the ball is launched. Empty or settled Merge Drop has no frame
   loop; dropping wakes it. A stable stack sleeps after 0.45s below a speed threshold.
 - Shared circle physics: fixed 120 Hz steps, elapsed time capped at 50 ms/frame;
-  rendering follows display refresh. At most 36 merge bodies, 16 pool balls, and
+  rendering follows display refresh. At most 36 merge bodies, 35 bricks, and
   40 short-lived particles.
 - Logo: demand-driven animation, stops within 7 seconds or on blur.
 - Reduced-motion preference disables particles and row-clear flashes.
@@ -38,7 +41,8 @@ Resource policy
 
 Extending it
 arcade_core.js contains DOM-free primitives: clamp, physics, tetris, factory,
-pool, and poolStep.
+breakout. Legacy Pool primitives remain only for backwards compatibility/tests;
+Pool is not offered by the UI.
 The reserved page receives window.__zroArcade. The physics function takes circle
 objects {x,y,r,vx,vy}, timestep, bounds, gravity, restitution, and optional contact
 callback. Do not mutate the body array from that callback; collect changes and

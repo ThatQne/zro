@@ -120,6 +120,7 @@ export default function FolderItem({ folder, expanded = true, onContextMenu, onF
       {/* Folder header */}
       <motion.div
         onClick={() => !editing && toggleFolder(folder.id)}
+        data-folder-header
         onContextMenu={(e) => onFolderContextMenu(e, folder.id)}
         onMouseEnter={() => setHeaderHover(true)}
         onMouseLeave={() => setHeaderHover(false)}

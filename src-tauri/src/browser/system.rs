@@ -132,10 +132,15 @@ pub async fn search_suggest(q: String) -> Result<Vec<String>, String> {
     if q.is_empty() {
         return Ok(vec![]);
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Reuse connections while typing instead of constructing a TLS pool
+    // and DNS resolver for every autocomplete request.
+    static CLIENT: std::sync::LazyLock<Result<reqwest::Client, reqwest::Error>> =
+        std::sync::LazyLock::new(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+        });
+    let client = CLIENT.as_ref().map_err(|e| e.to_string())?;
     let v: serde_json::Value = client
         .get("https://suggestqueries.google.com/complete/search")
         .query(&[("client", "firefox"), ("q", q.as_str())])
@@ -176,16 +181,32 @@ const CLEAR_SITE_STORAGE_JS: &str = r#"(function(){
 })();"#;
 
 /// Selective clearing: scope = "site" (active page) | "all", kinds ⊆
-/// {"cookies","cache","storage"}. Per-site cache isn't supported by WebView2
-/// — the frontend greys that combination out.
+/// {"cookies","cache","storage"}. Site cache clears CacheStorage and bypasses
+/// the HTTP cache on reload; it must never evict other sites' disk caches.
 #[tauri::command]
 pub async fn clear_site_data(
     app: AppHandle,
     scope: String,
-    kinds: Vec<String>,
+    mut kinds: Vec<String>,
     url: Option<String>,
 ) -> Result<(), String> {
     let all = scope == "all";
+    let selected = if !all {
+        let wv = super::active_webview(&app).ok_or("no active page")?;
+        let expected = url
+            .as_deref()
+            .and_then(|s| url::Url::parse(s).ok())
+            .ok_or("invalid site")?;
+        let actual = wv.url().map_err(|e| e.to_string())?;
+        if expected.origin() != actual.origin() {
+            return Err("The active site changed; reopen the dialog.".into());
+        }
+        Some(wv)
+    } else {
+        None
+    };
+    // Reload only after cookies/storage have been cleared.
+    kinds.sort_by_key(|k| k == "cache");
     for kind in &kinds {
         match (kind.as_str(), all) {
             ("cookies", true) => super::cookies::delete_all_cookies(&app).await?,
@@ -198,13 +219,62 @@ pub async fn clear_site_data(
             ("cache", true) => {
                 clear_profile_data(&app, ProfileDataKind::Cache).await?;
             }
+            ("cache", false) =>
+            {
+                #[cfg(windows)]
+                if let Some(wv) = &selected {
+                    let origin = wv
+                        .url()
+                        .map_err(|e| e.to_string())?
+                        .origin()
+                        .ascii_serialization();
+                    let params =
+                        serde_json::json!({"origin":origin,"storageTypes":"cache_storage"})
+                            .to_string();
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let completion = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+                    wv.with_webview(move |p| unsafe {
+                        let callback_completion = completion.clone();
+                        let result = (|| -> windows_core::Result<()> {
+                            let core = p.controller().CoreWebView2()?;
+                            let core2 = core.clone();
+                            let done = webview2_com::CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _| {
+                                let outcome = result.and_then(|_| {
+                                    let reload = webview2_com::CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
+                                    core2.CallDevToolsProtocolMethod(&windows_core::HSTRING::from("Page.reload"), &windows_core::HSTRING::from("{\"ignoreCache\":true}"), &reload)
+                                });
+                                if let Some(tx) = callback_completion.lock().unwrap().take() {
+                                    let _=tx.send(outcome.map_err(|e|e.to_string()));
+                                }
+                                Ok(())
+                            }));
+                            core.CallDevToolsProtocolMethod(&windows_core::HSTRING::from("Storage.clearDataForOrigin"), &windows_core::HSTRING::from(params), &done)
+                        })();
+                        if let Err(e)=result { if let Some(tx)=completion.lock().unwrap().take(){let _=tx.send(Err(e.to_string()));} }
+                    }).map_err(|e| e.to_string())?;
+                    tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                        .await
+                        .map_err(|_| "Site cache clearing timed out".to_string())?
+                        .map_err(|e| e.to_string())??;
+                }
+            }
             ("storage", true) => {
                 clear_profile_data(&app, ProfileDataKind::DomStorage).await?;
             }
             ("storage", false) => {
-                if let Some(wv) = super::active_webview(&app) {
-                    wv.eval(CLEAR_SITE_STORAGE_JS)
-                        .map_err(|e: tauri::Error| e.to_string())?;
+                if let Some(wv) = &selected {
+                    let origin = url
+                        .as_deref()
+                        .and_then(|s| url::Url::parse(s).ok())
+                        .ok_or("invalid site")?
+                        .origin()
+                        .ascii_serialization();
+                    wv.eval(format!(
+                        "if(location.origin==={}){{ {} }}",
+                        serde_json::to_string(&origin).unwrap(),
+                        CLEAR_SITE_STORAGE_JS
+                    ))
+                    .map_err(|e: tauri::Error| e.to_string())?;
                 }
             }
             _ => {}
