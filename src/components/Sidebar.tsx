@@ -63,6 +63,8 @@ export default function Sidebar() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const dragging = useRef(false);
   const [overId, setOverId] = useState<string | null>(null);
+  const dropFolderId = overId && (folders.some(f => f.id === overId)
+    ? overId : allTabs.find(t => t.id === overId)?.folderId);
   // The dragged tab's REAL row width — DragStack used to hardcode 196px
   // while the actual flyout row is ~212px, leaving an uncovered strip on the
   // right that read as a black box around the dragged tab (the flyout's own
@@ -432,8 +434,11 @@ export default function Sidebar() {
             // `over` and silently drops nothing.
             collisionDetection={(args) => {
               const hits = pointerWithin(args);
-              const precise = hits.filter(h => h.id !== "root-zone");
-              return precise.length ? precise : hits.length ? hits : closestCenter(args);
+              // Rows win over their enclosing open-folder target. Empty
+              // margins/gaps still belong to the folder rather than root.
+              const rows=hits.filter(h=>!String(h.id).startsWith("folder-")&&h.id!=="root-zone");
+              const folders=hits.filter(h=>String(h.id).startsWith("folder-"));
+              return rows.length?rows:folders.length?folders:hits.length?hits:closestCenter(args);
             }}
             modifiers={[clampToFlyout]}
             onDragStart={handleDragStart}
@@ -478,7 +483,7 @@ export default function Sidebar() {
               >
                 {/* Folders */}
                 {folders.map((folder) => (
-                  <FolderDropZone key={folder.id} folderId={folder.id} isOver={overId === folder.id}>
+                  <FolderDropZone key={folder.id} folderId={folder.id} isOver={dropFolderId === folder.id}>
                     <FolderItem
                       folder={folder}
                       expanded
@@ -630,7 +635,7 @@ function FolderDropZone({ folderId, isOver, children }: {
   const { setNodeRef } = useDroppable({ id: folderId });
   return (
     <motion.div
-      ref={(node) => setNodeRef(node?.querySelector<HTMLElement>("[data-folder-header]") ?? node)}
+      ref={setNodeRef}
       animate={{ backgroundColor: isOver ? "rgba(79,128,245,0.16)" : "rgba(0,0,0,0)" }}
       transition={{ duration: 0.1 }}
       style={{

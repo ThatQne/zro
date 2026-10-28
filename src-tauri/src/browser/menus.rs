@@ -219,6 +219,13 @@ pub fn show_page_menu_now(app: &AppHandle) {
                 .build()?;
             menu = menu
                 .item(
+                    &MenuItemBuilder::with_id(
+                        "page:save-image:original",
+                        "Save Original (keeps animation)",
+                    )
+                    .build(app)?,
+                )
+                .item(
                     &MenuItemBuilder::with_id("page:open-image", "Open Image in New Tab")
                         .build(app)?,
                 )
@@ -229,6 +236,23 @@ pub fn show_page_menu_now(app: &AppHandle) {
                         .build(app)?,
                 )
                 .separator();
+        }
+        if !ctx.is_image && !ctx.src.is_empty() {
+            menu = menu
+                .item(
+                    &MenuItemBuilder::with_id("page:save-image:original", "Save Media As…")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("page:copy-image", "Copy Media Address")
+                        .build(app)?,
+                )
+                .separator();
+        }
+        if !ctx.link.is_empty() {
+            menu = menu.item(
+                &MenuItemBuilder::with_id("page:save-link", "Save Linked File As…").build(app)?,
+            );
         }
 
         if !ctx.selection.trim().is_empty() {
@@ -271,6 +295,9 @@ pub fn show_page_menu_now(app: &AppHandle) {
 #[tauri::command]
 pub async fn save_image_as(app: AppHandle, url: String, format: String) -> Result<String, String> {
     use image::ImageFormat;
+    if format == "original" {
+        return super::media::save_original(&app, url).await;
+    }
 
     let (fmt, ext) = match format.as_str() {
         "png" => (ImageFormat::Png, "png"),
@@ -279,30 +306,22 @@ pub async fn save_image_as(app: AppHandle, url: String, format: String) -> Resul
         other => return Err(format!("unsupported format: {other}")),
     };
 
-    // Host-side fetch — no CORS / tainted-canvas limits (client JS can't do this).
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| e.to_string())?;
-    let bytes = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let img = image::load_from_memory(&bytes).map_err(|e| format!("decode failed: {e}"))?;
-    // JPEG has no alpha channel — flatten transparency to RGB first.
-    let img = if matches!(fmt, ImageFormat::Jpeg) {
-        image::DynamicImage::ImageRgb8(img.to_rgb8())
-    } else {
-        img
-    };
-
-    let mut out: Vec<u8> = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut out), fmt)
-        .map_err(|e| format!("encode failed: {e}"))?;
+    let bytes = super::media::bytes(&app, &url).await?;
+    let out = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        super::media::check_image(&bytes)?;
+        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+        let img = if matches!(fmt, ImageFormat::Jpeg) {
+            image::DynamicImage::ImageRgb8(img.to_rgb8())
+        } else {
+            img
+        };
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), fmt)
+            .map_err(|e| e.to_string())?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     // Default name from the URL's last path segment (minus its old extension).
     let stem = url

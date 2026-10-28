@@ -83,7 +83,7 @@ fn merge_save(
             out["settings"]["blocks"] = blocks.clone();
         }
     }
-    for name in ["blocks", "factory", "merge", "pool", "breakout"] {
+    for name in ["blocks", "factory", "merge", "pool", "breakout", "snake"] {
         if let Some(game) = incoming["games"].get(name) {
             if updated(game) >= updated(&out["games"][name]) {
                 out["games"][name] = game.clone();
@@ -120,21 +120,27 @@ pub(crate) fn handle_message(app: &AppHandle, label: &str, value: &serde_json::V
     let Some(path) = save_path(app) else {
         return true;
     };
-    if kind == "zro-arcade-load" {
-        send_save(app, &tab_id);
-    } else if let Some(incoming) = value.get("data") {
-        let current = std::fs::read_to_string(&path)
-            .ok()
-            .filter(|s| s.len() <= 128 * 1024)
-            .and_then(|s| serde_json::from_str(&s).ok());
-        if let Some(merged) = merge_save(current, incoming) {
-            if let Ok(bytes) = serde_json::to_vec(&merged) {
-                // Small (<128 KiB), infrequent debounced save. Direct replacement
-                // works on Windows even when the destination already exists.
-                let _ = std::fs::write(path, bytes);
+    // Disk/antivirus latency must never run on the shared WebView2 callback.
+    let app = app.clone();
+    let incoming = value.get("data").cloned();
+    let kind = kind.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        static DISK: Mutex<()> = Mutex::new(());
+        let _guard = DISK.lock().unwrap();
+        if kind == "zro-arcade-load" {
+            send_save(&app, &tab_id);
+        } else if let Some(incoming) = incoming {
+            let current = std::fs::read_to_string(&path)
+                .ok()
+                .filter(|s| s.len() <= 128 * 1024)
+                .and_then(|s| serde_json::from_str(&s).ok());
+            if let Some(merged) = merge_save(current, &incoming) {
+                if let Ok(bytes) = serde_json::to_vec(&merged) {
+                    let _ = std::fs::write(path, bytes);
+                }
             }
         }
-    }
+    });
     true
 }
 

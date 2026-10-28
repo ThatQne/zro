@@ -46,6 +46,7 @@ interface MemState {
   trash: MemNode[]; // session-only undo buffer for deleted nodes
   loaded: boolean;
   busy: boolean;
+  clear: () => Promise<void>;
   load: () => Promise<void>;
   add: (input: AddInput) => Promise<MemNode | null>;
   update: (id: string, patch: Partial<Pick<MemNode, "title" | "body" | "done" | "pinned" | "tags">>) => Promise<void>;
@@ -68,6 +69,10 @@ export const useMemoryStore = create<MemState>((set, get) => ({
   trash: [],
   loaded: false,
   busy: false,
+  clear: async () => {
+    await invoke("mem_clear");
+    set({nodes:[],edges:[],trash:[],loaded:true});
+  },
 
   load: async () => {
     try {

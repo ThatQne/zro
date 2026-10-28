@@ -335,6 +335,7 @@ function Favicon({ tab, isActive, size }: { tab: Tab; isActive: boolean; size: n
         width={size}
         height={size}
         style={{ borderRadius: 2 }}
+        onLoad={(e)=>{if(e.currentTarget.naturalWidth<3||e.currentTarget.naturalHeight<3)setBroken(true);}}
         onError={() => setBroken(true)}
       />
     );
@@ -348,7 +349,7 @@ function Favicon({ tab, isActive, size }: { tab: Tab; isActive: boolean; size: n
       />
     );
   }
-  return <Globe size={size - 3} color={isActive ? "#888" : "#3a3a3a"} />;
+  return <Globe size={size - 1} color={isActive ? "#bbc7dd" : "#8b94a5"} />;
 }
 
 /** Lightweight version for drag stack — no dnd hooks, simplified display.

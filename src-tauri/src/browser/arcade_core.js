@@ -116,6 +116,7 @@
     { id: 'swarm', name: 'Solar swarm', detail: 'Harvest a star to power the fleet', base: 850000000, growth: 1.24, rate: 6500000, unlock: 500000000 },
     { id: 'gate', name: 'Deep-space relay', detail: 'Bridge distant colonies', base: 45000000000, growth: 1.25, rate: 230000000, unlock: 25000000000 },
     { id: 'engine', name: 'Horizon engine', detail: 'Explore the edge of the network', base: 3500000000000, growth: 1.26, rate: 11000000000, unlock: 2000000000000 },
+    ...[1e15,1e18,1e21,1e24,1e27].map((base,i)=>({id:'frontier'+i,name:['Nebula forge','Galaxy lattice','Void observatory','Multiverse gate','Infinity archive'][i],detail:'Late-game frontier infrastructure',base,growth:1.26,rate:base/500,unlock:base*.6})),
   ];
   const minerUpgrades = [
     { id: 'tap2', name: 'Better switch', detail: 'Tap power ×2', cost: 80, unlock: 40 },
@@ -124,7 +125,21 @@
     { id: 'tap10', name: 'Parallel input', detail: 'Tap power ×5', cost: 18000, unlock: 10000 },
     { id: 'all3', name: 'Vector pipeline', detail: 'All production ×3', cost: 160000, unlock: 100000 },
     ...[1e7, 1e9, 1e11, 1e13, 1e15].map((cost,i)=>({id:`network${i}`,name:['Optical mesh','Orbital links','Star map','Warp routing','Event horizon'][i],detail:'All production ×2',cost,unlock:cost/2})),
+    ...[1e18,1e21,1e24,1e27,1e30].map((cost,i)=>({id:`network${i+5}`,name:['Nebula compression','Galactic backbone','Void telemetry','Universal relay','Infinite signal'][i],detail:'All production ×2',cost,unlock:cost/2})),
   ];
+  const researchTree = [
+    {id:'scheduler',name:'Task scheduler',detail:'Production ×2',cost:1,requires:[],branch:'Compute'},
+    {id:'parallel',name:'Parallel execution',detail:'Production ×3',cost:3,requires:['scheduler'],branch:'Compute'},
+    {id:'optical',name:'Optical processor',detail:'Production ×5',cost:12,requires:['parallel'],branch:'Compute'},
+    {id:'fusion',name:'Fusion network',detail:'Production ×8',cost:60,requires:['optical'],branch:'Compute'},
+    {id:'input',name:'Input amplifier',detail:'Tap ×10',cost:1,requires:[],branch:'Input'},
+    {id:'combo',name:'Signal cascade',detail:'Tap ×25',cost:4,requires:['input'],branch:'Input'},
+    {id:'resonance',name:'Resonance array',detail:'Tap ×100',cost:18,requires:['combo'],branch:'Input'},
+    {id:'salvage',name:'Salvage scanner',detail:'More artifacts from expeditions',cost:2,requires:[],branch:'Discovery'},
+    {id:'survey',name:'Deep survey',detail:'Artifact power ×2',cost:8,requires:['salvage'],branch:'Discovery'},
+    {id:'archive',name:'Ancient archive',detail:'Production ×10',cost:40,requires:['survey','optical'],branch:'Discovery'},
+  ];
+  const artifactDefs=['Signal chip','Photon lens','Cryo capacitor','Relic processor','Horizon beacon'];
   const achievementDefs = [
     { id: 'first', name: 'First signal', detail: 'Tap once', test: s => s.taps >= 1 },
     { id: 'hundred', name: 'Three digits', detail: 'Produce 100 cycles', test: s => s.total >= 100 },
@@ -145,8 +160,12 @@
       achievements: Array.isArray(data.achievements) ? data.achievements.filter(id => achievementDefs.some(a => a.id === id)) : [],
       lastSaved: Number(data.lastSaved) || Date.now() };
     s.shards = Math.max(0, Number(data.shards)||0); s.reboots = Math.max(0,Number(data.reboots)||0); s.research = Math.max(0,Number(data.research)||0);
-    s.multiplier = () => (1 + s.achievements.length * .1) * (s.upgrades.includes('all2') ? 2 : 1) * (s.upgrades.includes('all3') ? 3 : 1) * 2**s.upgrades.filter(id=>id.startsWith('network')).length * (1+s.research*.5);
-    s.clickPower = () => (s.upgrades.includes('tap2') ? 2 : 1) * (s.upgrades.includes('tap10') ? 5 : 1) * s.multiplier();
+    s.tree=Array.isArray(data.tree)?[...new Set(data.tree.filter(id=>researchTree.some(r=>r.id===id)))]:[];
+    s.artifacts=artifactDefs.map((_,i)=>Math.max(0,Math.floor(Number(data.artifacts?.[i])||0)));
+    s.expeditions=Math.max(0,Math.floor(Number(data.expeditions)||0));
+    const has=id=>s.tree.includes(id);
+    s.multiplier = () => (1 + s.achievements.length * .1) * (s.upgrades.includes('all2') ? 2 : 1) * (s.upgrades.includes('all3') ? 3 : 1) * 2**s.upgrades.filter(id=>id.startsWith('network')).length * (1+s.research*.5) * (has('scheduler')?2:1)*(has('parallel')?3:1)*(has('optical')?5:1)*(has('fusion')?8:1)*(has('archive')?10:1)*(1+s.artifacts.reduce((n,v,i)=>n+Math.log2(1+v)*(i+1)*.03,0)*(has('survey')?2:1));
+    s.clickPower = () => (s.upgrades.includes('tap2') ? 2 : 1) * (s.upgrades.includes('tap10') ? 5 : 1) * s.multiplier()*(has('input')?10:1)*(has('combo')?25:1)*(has('resonance')?100:1);
     s.rate = () => minerItems.reduce((sum, item, i) => sum + item.rate * s.items[i] * (i === 0 && s.upgrades.includes('node2') ? 2 : 1), 0) * s.multiplier();
     s.cost = i => Math.ceil(minerItems[i].base * minerItems[i].growth ** s.items[i]);
     s.tap = () => { const n = s.clickPower(); s.energy += n; s.total += n; s.taps++; return s.check(); };
@@ -157,7 +176,25 @@
     s.reboot = () => { const gain = s.rebootGain(); if (!gain) return false; s.shards+=gain; s.reboots++; s.energy=s.total=0; s.items=minerItems.map(()=>0); s.upgrades=[]; s.check(); return true; };
     s.researchCost = () => 2**Math.min(40,s.research);
     s.buyResearch = () => { const cost=s.researchCost(); if(s.shards<cost)return false; s.shards-=cost; s.research++; s.check(); return true; };
+    s.unlockResearch=id=>{const r=researchTree.find(r=>r.id===id);if(!r||has(id)||s.shards<r.cost||!r.requires.every(has))return false;s.shards-=r.cost;s.tree.push(id);return true;};
+    // Earned, deterministic exploration rewards; no paid/random loot boxes.
+    s.expeditionCost=()=>1e6*4**Math.min(40,s.expeditions);
+    s.explore=()=>{const cost=s.expeditionCost();if(s.energy<cost)return false;s.energy-=cost;const id=Math.min(4,Math.floor(s.expeditions/4));s.artifacts[id]+=has('salvage')?2:1;s.expeditions++;return artifactDefs[id];};
     s.check = () => { const before = s.achievements.length; for (const a of achievementDefs) if (!s.achievements.includes(a.id) && a.test(s)) s.achievements.push(a.id); return s.achievements.slice(before); };
+    return s;
+  }
+
+  function snake(data={}) {
+    const s={body:[{x:10,y:12},{x:9,y:12},{x:8,y:12}],direction:{x:1,y:0},queued:null,food:{x:15,y:12},score:0,best:0,elapsed:0,over:false};
+    s.turn=(x,y)=>{if(s.queued||x===-s.direction.x&&y===-s.direction.y)return false;s.queued={x,y};return true;};
+    s.placeFood=()=>{const occupied=new Set(s.body.map(p=>p.y*20+p.x));const free=[];for(let i=0;i<400;i++)if(!occupied.has(i))free.push(i);if(!free.length){s.over=true;return;}const cell=free[(s.score*73+17)%free.length];s.food={x:cell%20,y:Math.floor(cell/20)};};
+    s.step=dt=>{if(s.over)return;s.elapsed+=clamp(dt,0,.05);const interval=Math.max(.065,.17-s.score*.002);if(s.elapsed<interval)return;s.elapsed-=interval;
+      if(s.queued){s.direction=s.queued;s.queued=null;}const head={x:s.body[0].x+s.direction.x,y:s.body[0].y+s.direction.y};const eat=head.x===s.food.x&&head.y===s.food.y;
+      const collision=s.body.slice(0,eat?s.body.length:-1).some(p=>p.x===head.x&&p.y===head.y);
+      if(head.x<0||head.x>=20||head.y<0||head.y>=20||collision){s.over=true;return;}
+      s.body.unshift(head);if(eat){s.score++;s.best=Math.max(s.best,s.score);s.placeFood();}else s.body.pop();
+    };
+    for(const key of ['body','direction','queued','food','score','best','elapsed','over'])if(Object.hasOwn(data,key))s[key]=JSON.parse(JSON.stringify(data[key]));
     return s;
   }
 
@@ -234,7 +271,7 @@
     if (!s.moving && s.balls.every(b => b.cue)) { s.racks++; s.rack(); }
   }
 
-  const api = { clamp, physics, tetris, factory, breakout, pool, poolStep, poolPockets, shapes, minerItems, minerUpgrades, achievementDefs };
+  const api = { clamp, physics, tetris, factory, snake, breakout, pool, poolStep, poolPockets, shapes, minerItems, minerUpgrades, achievementDefs, researchTree, artifactDefs };
   if (node) module.exports = api;
   else Object.defineProperty(window, '__zroArcade', { value: api, configurable: true });
 })();

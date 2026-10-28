@@ -1,0 +1,131 @@
+0.1.17 stability release verification
+
+Confirmed native crash: local panic logs identified wry 0.55.1's
+WebMessageReceived Request::builder().uri(source).body(message).unwrap().
+file:/// and other non-HTTP source URIs can fail parsing and abort across the
+COM callback boundary. Backport upstream Wry #1772 in vendor/wry; keep the
+Tauri-compatible version, licenses and patch provenance. Invalid IPC is dropped
+without granting it a fallback trusted origin. Native file/data/about/HTTP/blob
+source messages were exercised without aborting.
+
+Confirmed Sheets startup failure: the live authenticated document's console
+reported "Identifier 'ipc' has already been declared" in its core script.
+Wry reserved a non-configurable Window.ipc global. Make the descriptor
+configurable so top-level lexical `let ipc` can coexist with window.ipc calls.
+The original descriptor reproduces the error in the renderer regression test;
+the fixed descriptor permits the site bundle and still delivers IPC. The same
+authenticated sheet loaded successfully afterward without deleting cache,
+cookies or storage. Public sample loading alone had missed this real failure.
+
+Confirmed live Alt-Tab hang: main thread blocked in parking_lot::RawMutex with
+two nested Tao keyboard callbacks separated by KeyEventBuilder::process_message
+and PeekMessageW. Backport Tao #1215 to the compatible 0.35.2 source. Move peeks
+before KEY_EVENT_BUILDERS, WindowState and layout-cache guards, including IME.
+Afterward the exact away/restore sequence passed 10 live Alt-Tab cycles with
+the authenticated sheet and chrome responsive. The old build froze on the
+first cycle. A further 10 cycles passed with a single-letter search active in
+the 194-page RFC 9110 PDF (20 live cycles total). No window-manager/OS/security
+settings were changed. The frozen
+read-only test process was stopped; other app processes were not terminated.
+
+Find: prefer the WebView2 native find engine. Single/two-character searches do
+not highlight every match. Older-runtime fallback scans in cancelable 4 ms slices
+with traversal/character/range caps and no layout read for every occurrence.
+Fuzzy/structured indexing is not run on each find-bar keystroke.
+Programmatic native Find suppresses the default find HWND: otherwise WebView2
+opens a second find popup and can steal input from zro's address/find fields.
+Live PDF search for 'e' completed with 49,930 matches and no app/panic failure.
+Native PDF search behavior remains runtime-dependent; Microsoft's Find API has
+documented PDF next/previous limitations, not a promise that every PDF feature
+works identically to HTML search.
+
+Focus/layout: child focus does not re-stack windows on every bounce; activation
+and resize bursts have one pending worker. Chrome-region updates are deferred
+and coalesced outside native callbacks; stacking is non-activating/asynchronous.
+Failed minimize/maximize/close/drag requests do not panic. No oversized render
+surfaces during resize. These reduce identified risk paths, not a claim that all
+runtime/driver hangs have been diagnosed. A prior local hang had 6977 MiB free.
+
+Sites: keep canvas readback AND export native (including small canvases).
+Keep native UA, UserAgentData and client hints instead of fabricated full-version
+lists and inconsistent per-resource rewrites. Preserve the isolated CRX override.
+Clear per-origin storage
+through awaited CDP operations, including service workers for cached sites,
+before reloading with HTTP-cache bypass. Do not reset all sites/cookies.
+Authenticated Sheets was verified in the patched desktop build. DeepSeek's
+public login page loaded in the isolated native test; authenticated chat/session
+behavior is not inferred from login-page loading.
+
+Memory is manual-only. Neither history visits nor automatic page embedding are
+invoked. A one-time local clear request is queued for the next new-build startup;
+the previous graph is archived locally before replacement. Normal browser
+history and session cookies are not cleared. The pending request is local app
+data, not a repository migration that clears everyone else's saved notes.
+
+Media: recognize images/video/audio/canvas/CSS-background images via composed
+paths and point hit-testing. Offer original saving (including animated GIF),
+PNG/JPEG/WebP conversion, and linked-file saving. Native streaming-to-disk avoids
+buffering entire ordinary video downloads. Blob export/conversion is bounded
+to 32 MiB and decoded images to 16 million pixels. Protected MediaSource/DRM
+streams are not standalone exportable files. No video transcoding is claimed.
+
+Games: replace Breakout with saved Snake; retain old saves, do not display the
+old game. Miner tick updates retain DOM rows, scroll, and pointer targets; 15
+hardware tiers, 15 upgrades, prerequisite-based research and deterministic earned
+artifact expeditions. No paid/random loot boxes. Arcade disk writes are moved
+off the WebView2 callback, serialized and revision-merged.
+
+Research (reviewed 2026-10-28):
+https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/threading-model
+https://github.com/MicrosoftEdge/WebView2Feedback/issues/3157
+https://github.com/arthurprs/quick-cache
+https://github.com/Shopify/rust-cache-benchmarks
+https://github.com/tauri-apps/wry/issues/1255
+https://github.com/tauri-apps/wry/pull/1772
+https://github.com/tauri-apps/tao/pull/1215
+
+Quick Cache is relevant for scan-resistant bounded decision caches, not a way
+to compress or replace Chromium's live DOM/JS heap. zro already has an O(1)
+lookup bounded CLOCK decision cache; no additional cache crate was added without
+evidence of a bottleneck. Priority here is removing synchronous hot-path work,
+bounding allocations and coalescing UI operations, rather than claiming an
+exponential speedup from a different cache policy or changing browser engines.
+
+Checks completed:
+- pnpm build: passed (TypeScript + production frontend).
+- pnpm test:browser: 36 passed.
+- cargo test --lib browser::: 18 passed.
+- scripts/find-ui.test.cjs: passed, including 30,000-paragraph single-letter
+  search, bounded layout reads, cancel-on-close, native search dispatch and CSP.
+- scripts/media-ui.test.cjs: passed (WebP link, video, CSS GIF, canvas).
+- scripts/native-bridge-ui.test.cjs: reproduces the Sheets syntax error with
+  the original bridge, and verifies the patched bridge plus lexical coexistence.
+- scripts/arcade-ui.test.cjs: passed, including stable DOM/scroll across Miner
+  ticks, research/artifact views, Snake, save restoration and idle cancellation.
+- Native WebView2 example: file/data/about/HTTP/blob IPC and exact canvas pixel
+  readback passed. Real native Find completed a single-letter search in 30,000
+  paragraphs. 100 visibility/bounds cycles passed, with responsiveness checks
+  every 10 cycles. Public sample Sheets loaded a real canvas/grid; DeepSeek's
+  login page loaded. These do not substitute for live Alt-Tab verification above.
+- The native example uses an invisible window and unique temporary profile.
+  It never sends desktop input, accesses the user's cookies, or authenticates.
+- The first native harness attempt exited its event loop on Init and timed out
+  after a burst of native operations. Corrected it to drain MainEventsCleared;
+  a test-harness timeout is not itself evidence of a product fix.
+- Browser Rust suite above is scoped: the wider suite has a pre-existing
+  agent::search::tests::ranking_finds_the_buried_paragraph budget/ranking failure.
+  Do not report the entire Rust suite as green.
+
+Release assets must match the verified source/build, and installer signatures
+and published SHA-256 digests are checked before reporting publication complete.
+
+Final follow-up: Up/Down now advances actual matches, not the unused ranked
+results list. Native index/count events update the display after navigation.
+PDF Ctrl+F delegates to native viewer controls because programmatic next/previous
+has runtime limitations. Folder highlighting resolves the hovered row's folder,
+so the whole receiving folder highlights, not just its header.
+The arrow-key/button renderer regression passed, pnpm build and 36 browser
+tests passed, cargo check passed, and the final release bundle built successfully.
+Desktop testing was stopped by the user's physical Escape. The user explicitly
+requested publication without further desktop testing; final PDF-routing and
+folder-highlight desktop verification are not claimed.

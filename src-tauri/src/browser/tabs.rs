@@ -61,6 +61,7 @@ pub(crate) struct TabHistory {
     urls: Vec<String>,
     current: usize,
     skip_next: bool,
+    renderer_backed: bool,
 }
 
 impl TabHistory {
@@ -69,12 +70,15 @@ impl TabHistory {
             urls: vec![url],
             current: 0,
             skip_next: false,
+            renderer_backed: true,
         }
     }
     fn push(&mut self, url: String) {
         if self.skip_next {
             self.skip_next = false;
-            return;
+            if self.urls.get(self.current) == Some(&url) {
+                return;
+            }
         }
         if self
             .urls
@@ -389,7 +393,10 @@ pub(crate) fn on_restored(app: &AppHandle) {
     if !MINIMIZED.swap(false, Ordering::SeqCst) {
         return; // plain resize, not a restore
     }
-    thaw_active_tab(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        thaw_active_tab(&app);
+    });
 }
 
 /// Focus = the user is definitively here. Clears ANY stuck freeze state
@@ -408,6 +415,19 @@ pub(crate) fn on_user_active(app: &AppHandle) {
     if system_idle_ms() > 5_000 {
         return;
     }
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+        let Some(main) = app.get_window("main") else {
+            return;
+        };
+        let Ok(hwnd) = main.hwnd() else {
+            return;
+        };
+        if GetAncestor(GetForegroundWindow(), GA_ROOT) != hwnd {
+            return;
+        }
+    }
     let was_min = MINIMIZED.swap(false, Ordering::SeqCst);
     #[cfg(windows)]
     let was_idle = IDLE_FROZEN.swap(false, Ordering::SeqCst)
@@ -421,8 +441,24 @@ pub(crate) fn on_user_active(app: &AppHandle) {
     } else {
         // Raising chrome repairs stacking without showing/resizing the page
         // again, which can itself trigger another native focus notification.
-        super::overlay::update_ui_region(app);
+        // No re-stacking on every child-focus bounce. Actual tab/layout/
+        // overlay changes already repair their own regions.
     }
+}
+
+pub(crate) fn queue_activation(app: &AppHandle) {
+    static PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        on_user_active(&app);
+        super::extensions::dismiss_popup_on_outside_click(&app);
+        PENDING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Resume + show the active tab's renderer and put it back at its layout rect.
@@ -772,6 +808,7 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
     let _ = wv.with_webview(move |pwv| unsafe {
         let controller = pwv.controller();
         if let Ok(core) = controller.CoreWebView2() {
+            super::search::configure_native(&core);
             let app_links = app.clone();
             let message_label = id.clone();
             let handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
@@ -785,9 +822,9 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                 return Ok(());
                             } else if value["type"] == "zro-image-context" {
                                 let src = value["src"].as_str().unwrap_or("");
-                                if src.len() <= 65536 && ["https:","http:","data:image/","blob:"].iter().any(|s|src.starts_with(s)) {
+                                if src.len() <= 16000000 && ["https:","http:","data:","blob:"].iter().any(|s|src.starts_with(s)) {
                                     app_links.state::<Mutex<BrowserState>>().lock().unwrap().page_menu_ctx = super::PageMenuCtx {
-                                        src:src.into(),link:value["link"].as_str().unwrap_or("").into(),page_url:value["page_url"].as_str().unwrap_or("").into(),is_image:true,..Default::default()
+                                        src:src.into(),link:value["link"].as_str().unwrap_or("").into(),page_url:value["page_url"].as_str().unwrap_or("").into(),is_image:value["media_kind"]=="image",media_kind:value["media_kind"].as_str().unwrap_or("image").into(),..Default::default()
                                     };
                                     let a = app_links.clone();
                                     tauri::async_runtime::spawn(async move { let a2=a.clone();let _=a.run_on_main_thread(move||super::menus::show_page_menu_now(&a2)); });
@@ -809,37 +846,10 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
             }));
             let mut message_token = 0;
             let _ = core.add_WebMessageReceived(&handler, &mut message_token);
-            // Present as plain Chrome. WebView2's default UA carries "Edg/…"
-            // and its client-hint brands say "Microsoft Edge WebView2" — sites
-            // with embedded-browser blocklists (Twitch's supported-browsers
-            // page, some Google sign-in flows) refuse on sight of it. Strip
-            // the Edg token from the UA string; keep everything else (real
-            // Chrome version) so nothing looks spoofed.
-            {
-                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
-                use windows_core::HSTRING;
-                if let Ok(settings) = core.Settings() {
-                    if let Ok(s2) = settings.cast::<ICoreWebView2Settings2>() {
-                        let mut p = PWSTR::null();
-                        if s2.UserAgent(&mut p).is_ok() {
-                            let ua = take_pwstr(p);
-                            let cleaned: String = ua
-                                .split_whitespace()
-                                .filter(|t| !t.starts_with("Edg/") && !t.contains("WebView2"))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            // Feed the real Chrome version to the client-hint
-                            // fixup — the hints must tell the SAME story as
-                            // this string or the disagreement itself becomes
-                            // the tell. See shields::note_chrome_version.
-                            crate::browser::shields::note_chrome_version(&ua);
-                            if !cleaned.is_empty() && cleaned != ua {
-                                let _ = s2.SetUserAgent(&HSTRING::from(cleaned.as_str()));
-                            }
-                        }
-                    }
-                }
-            }
+            // Keep the runtime's real UA and native UserAgentData together.
+            // Fabricated fullVersionList values and per-resource hint rewrites
+            // made documents and API requests report different browser builds.
+            // The isolated CRX download override below is not applied to sites.
             // Custom right-click menu: suppress WebView2's built-in context menu,
             // capture what was clicked (link / image / selection), and pop our
             // own native menu — the same OS-popup style as the sidebar menus.
@@ -1118,21 +1128,8 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                             return Ok(());
                         }
 
-                        // (2) Client-hint consistency. Deliberately BEFORE the
-                        // Shields gate: the UA is rewritten unconditionally, so
-                        // the hints have to be corrected unconditionally too —
-                        // otherwise turning Shields off leaves a page reading
-                        // "Chrome" in the UA and "Microsoft Edge WebView2" in
-                        // Sec-CH-UA, which is what trips bot detection.
-                        if let Some(brands) = crate::browser::shields::sec_ch_ua() {
-                            if let Ok(headers) = req.Headers() {
-                                let _ = headers.SetHeader(&HSTRING::from("sec-ch-ua"), &HSTRING::from(brands.as_str()));
-                                let _ = headers.SetHeader(&HSTRING::from("sec-ch-ua-mobile"), &HSTRING::from("?0"));
-                                let _ = headers.SetHeader(&HSTRING::from("sec-ch-ua-platform"), &HSTRING::from("\"Windows\""));
-                            }
-                        }
-
-                        // (3) Shields — nothing to do when blocking is off/loading
+                        // Shields — nothing to do when blocking is off/loading.
+                        // Native client hints are left intact for every site.
                         if !crate::browser::shields::ads_active() {
                             return Ok(());
                         }
@@ -1309,6 +1306,14 @@ fn configure_webview(app: &AppHandle, wv: &tauri::Webview, id: &str) {
                                         if let Some(tab) = s.tabs.get_mut(&tab_id) { tab.url = url.clone(); }
                                     }
                                     super::new_tab::ensure_ready(&app_src, &tab_id);
+                                }
+                                // Own the logical trail natively, including SPA
+                                // transitions. UI metadata requests can lag or fail.
+                                if url != "about:blank" {
+                                    let state=app_src.state::<Mutex<BrowserState>>();
+                                    let mut s=state.lock().unwrap();
+                                    if let Some(tab)=s.tabs.get_mut(&tab_id){tab.url=url.clone();}
+                                    if let Some(h)=s.histories.get_mut(&tab_id){h.push(url.clone());}
                                 }
                                 let _ = app_src.emit("page-navigated", serde_json::json!({ "id": tab_id, "url": url }));
                             }
@@ -1776,15 +1781,6 @@ fn spawn_webview(
         builder = builder.data_directory(dir);
     }
 
-    // navigator.userAgentData must agree with the rewritten UA string. NOT
-    // gated on Shields — this is the JS-visible half of the same consistency
-    // fix the request headers get (see shields::ua_data_script). Empty until
-    // the first webview has reported a real UA, which is fine: that happens
-    // during the very first tab's setup.
-    if let Some(js) = crate::browser::shields::ua_data_script() {
-        builder = builder.initialization_script(&js);
-    }
-
     // Anti-fingerprinting: inject the farble script at document-create (before
     // page JS). Baked at build time from the current setting — toggling it
     // applies to newly loaded tabs.
@@ -2078,6 +2074,9 @@ pub async fn create_browser_tab(
                     // have already completed by then, causing duplicate work.
                 }
                 finish_foreground(&app, &state, &id, &url, &wv, prev_active, layout, &main);
+                if let Some(h) = state.lock().unwrap().histories.get_mut(&id) {
+                    h.renderer_backed = false;
+                }
                 if already_there {
                     // Spare already sits on this page — no load event will
                     // fire, so close the frontend's loading state ourselves
@@ -2204,6 +2203,9 @@ pub async fn hibernate_tab(
             return Err("page state requires light sleep".into());
         };
         s.sleep_snapshots.insert(id.clone(), snapshot);
+        if let Some(h) = s.histories.get_mut(&id) {
+            h.renderer_backed = false;
+        }
         let label = s.labels.remove(&id).unwrap_or_else(|| id.clone());
         s.label_owner.remove(&label);
         s.suspended.remove(&label);
@@ -2354,6 +2356,7 @@ pub async fn clone_tab_history(
     let mut s = state.lock().map_err(|e| e.to_string())?;
     if let Some(mut history) = s.histories.get(&source_id).cloned() {
         history.skip_next = false;
+        history.renderer_backed = false;
         s.histories.insert(id, history);
     }
     Ok(())
@@ -2379,46 +2382,48 @@ pub async fn push_to_history(
 /// Returns false when the renderer can't go that way (e.g. webview recreated
 /// this session) so the caller can fall back to the URL list.
 #[cfg(windows)]
-fn native_history_nav(wv: &tauri::Webview, forward: bool) -> bool {
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
-    let ok = wv
-        .with_webview(move |pwv| unsafe {
-            let controller = pwv.controller();
-            let moved = controller
-                .CoreWebView2()
-                .ok()
-                .and_then(|core| {
-                    let mut can = windows_core::BOOL::default();
-                    if forward {
-                        core.CanGoForward(&mut can).ok()?;
-                        if can.as_bool() {
-                            core.GoForward().ok()?;
-                            Some(true)
-                        } else {
-                            Some(false)
-                        }
+async fn native_history_nav(wv: &tauri::Webview, forward: bool) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    wv.with_webview(move |pwv| unsafe {
+        let controller = pwv.controller();
+        let moved = controller
+            .CoreWebView2()
+            .ok()
+            .and_then(|core| {
+                let mut can = windows_core::BOOL::default();
+                if forward {
+                    core.CanGoForward(&mut can).ok()?;
+                    if can.as_bool() {
+                        core.GoForward().ok()?;
+                        Some(true)
                     } else {
-                        core.CanGoBack(&mut can).ok()?;
-                        if can.as_bool() {
-                            core.GoBack().ok()?;
-                            Some(true)
-                        } else {
-                            Some(false)
-                        }
+                        Some(false)
                     }
-                })
-                .unwrap_or(false);
-            let _ = tx.send(moved);
-        })
-        .is_ok();
-    ok && rx
-        .recv_timeout(std::time::Duration::from_millis(500))
-        .unwrap_or(false)
+                } else {
+                    core.CanGoBack(&mut can).ok()?;
+                    if can.as_bool() {
+                        core.GoBack().ok()?;
+                        Some(true)
+                    } else {
+                        Some(false)
+                    }
+                }
+            })
+            .unwrap_or(false);
+        let _ = tx.send(moved);
+    })
+    .map_err(|e| e.to_string())?;
+    // A busy STA is not proof that native history is missing. Never queue
+    // a second fallback navigation just because the first one is delayed.
+    tokio::time::timeout(std::time::Duration::from_secs(3), rx)
+        .await
+        .map_err(|_| "History navigation timed out".to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(not(windows))]
-fn native_history_nav(_wv: &tauri::Webview, _forward: bool) -> bool {
-    false
+async fn native_history_nav(_wv: &tauri::Webview, _forward: bool) -> Result<bool, String> {
+    Ok(false)
 }
 
 async fn history_nav(
@@ -2435,33 +2440,28 @@ async fn history_nav(
     };
     resume_webview(&app, &crate::browser::tab_label(&app, &id), &wv);
 
+    // Never navigate into the warm spare's hidden bootstrap history. A fresh
+    // link tab with no logical predecessor must leave Back as a no-op.
+    let (url, renderer_backed) = {
+        let mut s = state.lock().unwrap();
+        let Some(h) = s.histories.get_mut(&id) else {
+            return Ok(());
+        };
+        let target = if forward { h.forward() } else { h.back() };
+        let Some(target) = target else {
+            return Ok(());
+        };
+        (target, h.renderer_backed)
+    };
+
     // Fast path: renderer session history (instant, preserves state)
-    let wv2 = wv.clone();
-    let native = tokio::task::spawn_blocking(move || native_history_nav(&wv2, forward))
-        .await
-        .unwrap_or(false);
+    let native = renderer_backed && native_history_nav(&wv, forward).await?;
     if native {
-        // Keep our URL list in step without triggering a nav
-        if let Ok(mut s) = state.lock() {
-            if let Some(h) = s.histories.get_mut(&id) {
-                if forward {
-                    h.forward();
-                } else {
-                    h.back();
-                }
-            }
-        }
         return Ok(());
     }
 
     // Fallback: our own URL list (restored tabs whose renderer history is gone)
-    let url = {
-        let mut s = state.lock().unwrap();
-        s.histories
-            .get_mut(&id)
-            .and_then(|h| if forward { h.forward() } else { h.back() })
-    };
-    if let Some(url) = url {
+    {
         let parsed = url.parse::<url::Url>().map_err(|e| e.to_string())?;
         let parsed = super::new_tab::navigation_url(&app, parsed)?;
         wv.navigate(parsed)

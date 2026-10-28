@@ -1,6 +1,6 @@
 [package]
 name = "zro"
-version = "0.1.16"
+version = "0.1.17"
 description = "zro browser"
 authors = ["ThatQne"]
 edition = "2021"
@@ -12,6 +12,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+# 0.55.x is required by this Tauri runtime. Backport Wry #1772 rather than
+# upgrading the entire native API/COM stack in a stability release.
+[patch.crates-io]
+wry = { path = "vendor/wry" }
+tao = { path = "vendor/tao" }
+
+[dev-dependencies]
+tao = "0.35"
+wry = { version = "0.55", default-features = false, features = ["os-webview"] }
 
 [dependencies]
 tauri = { version = "2", features = ["devtools", "unstable", "image-png"] }

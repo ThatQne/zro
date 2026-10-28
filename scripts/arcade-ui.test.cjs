@@ -39,7 +39,7 @@ const harness = `
     assert.deepEqual(await page.evaluate(() => __work.messages.map(x => x.type)), ['zro-arcade-load']);
     assert.equal(await page.locator('[data-game="ricochet"]').count(), 0);
     assert.equal(await page.locator('[data-game="pool"]').count(), 0);
-    assert.equal(await page.locator('[data-game="breakout"]').count(), 1);
+    assert.equal(await page.locator('[data-game="snake"]').count(), 1);
     assert.equal(await page.locator('.card-icon svg').count(), 4, 'Cards use SVG icons');
     assert.match(await page.evaluate(() => getComputedStyle(document.documentElement).fontFamily), /Outfit/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
@@ -76,6 +76,15 @@ const harness = `
     await page.locator('[data-buy="0"]').click();
     assert.match(await page.locator('#detail').textContent(), /cycles \/ second/);
     assert.equal((await work()).timers >= 1, true);
+    await page.evaluate(()=>{
+      const shop=document.querySelector('.shop');shop.scrollTop=180;window.oldShop=shop;window.oldRow=shop.firstElementChild;
+    });
+    const previousScroll=await page.locator('.shop').evaluate(s=>s.scrollTop);
+    await page.waitForTimeout(1300);
+    assert.equal(await page.locator('.shop').evaluate(s=>s.scrollTop),previousScroll,'Production ticks preserve list scroll');
+    assert.equal(await page.evaluate(()=>oldShop===document.querySelector('.shop')&&oldRow===oldShop.firstElementChild),true,'Ticks retain rows and pointer targets');
+    await page.getByRole('button',{name:'Research tree',exact:false}).click();assert.equal(await page.locator('[data-research]').count(),10);
+    await page.getByRole('button',{name:'Artifacts',exact:true}).click();assert.equal(await page.locator('[data-expedition]').count(),1);
     await page.locator('[data-view="achievements"]').click();
     assert.equal(await page.locator('.achievement.done').count() >= 1, true);
     await page.waitForTimeout(1200);
@@ -99,11 +108,12 @@ const harness = `
     await page.waitForTimeout(4500); assert.deepEqual(await work(), { frames: 0, timers: 0 });
     await page.locator('#back').click();
 
-    await page.locator('[data-game="breakout"]').click();
+    await page.locator('[data-game="snake"]').click();
+    assert.equal(await page.locator('[data-game="breakout"]').count(),0);
     assert.equal(await page.locator('canvas').getAttribute('width'), '360');
-    await page.keyboard.press('Space');
-    assert.equal((await work()).frames, 1); assert.match(await page.locator('#detail').textContent(), /3 lives/);
-    await page.screenshot({ path: resolve(output, 'breakout.png') });
+    await page.keyboard.press('ArrowUp');
+    assert.equal((await work()).frames, 1); assert.match(await page.locator('#detail').textContent(), /Length 3/);
+    await page.screenshot({ path: resolve(output, 'snake.png') });
     await page.evaluate(() => window.dispatchEvent(new Event('blur'))); assert.deepEqual(await work(), { frames: 0, timers: 0 });
 
     // Disk-style state load reconstructs methods and keeps miner inventory/settings.
@@ -120,6 +130,6 @@ const harness = `
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: resolve(output, 'menu-narrow.png'), fullPage: true });
     assert.deepEqual(errors, []); assert.deepEqual(requests, [localUrl, localUrl], 'Arcade makes no requests beyond its local document');
-    console.log('Arcade UI passed: zro theme, SVG controls, settings, hold/next, miner progression, merge boundaries, Breakout, persistence, idle cancellation, and responsive layout.');
+    console.log('Arcade UI passed: zro theme, SVG controls, settings, hold/next, miner progression, merge boundaries, Snake, persistence, idle cancellation, and responsive layout.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

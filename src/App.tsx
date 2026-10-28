@@ -221,6 +221,7 @@ export default function App() {
         // the native menu just had focus, so the webview clipboard API rejects.
         if (action === "page:open-link" && p.link) s.createTab(p.link);
         else if (action === "page:copy-link" && p.link) invoke("set_clipboard_text", { text: p.link }).catch(console.error);
+        else if (action === "page:save-link" && p.link) invoke("save_image_as", { url:p.link,format:"original" }).catch(console.error);
         else if (action === "page:open-image" && p.src) s.createTab(p.src);
         else if (action === "page:copy-image-data" && p.src) invoke("copy_image", { url: p.src }).catch(console.error);
         else if (action === "page:copy-image" && p.src) invoke("set_clipboard_text", { text: p.src }).catch(console.error);

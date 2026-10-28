@@ -14,9 +14,12 @@ pub mod clipboard;
 pub mod cookies;
 pub(crate) mod decision_cache;
 pub mod default_browser;
+#[cfg(windows)]
+pub(crate) mod devtools;
 pub mod downloads;
 pub mod extensions;
 pub mod layout;
+pub(crate) mod media;
 pub mod memory;
 pub mod menus;
 pub(crate) mod new_tab;
@@ -69,6 +72,7 @@ pub struct PageMenuCtx {
     pub page_url: String,  // top document URL
     pub is_image: bool,
     pub is_editable: bool,
+    pub media_kind: String,
 }
 
 pub struct BrowserState {

@@ -113,65 +113,38 @@ pub fn sync_bounds(app: &AppHandle) {
 /// region hole (see overlay.rs). One real set_bounds happens 300ms after the
 /// last event.
 pub fn on_live_resize(app: &AppHandle) {
-    let state = app.state::<Mutex<BrowserState>>();
-    let (id, layout, gen, was_resizing) = {
-        let mut s = state.lock().unwrap();
-        s.resize_gen = s.resize_gen.wrapping_add(1);
-        let was = s.resizing;
-        s.resizing = true;
-        (s.active_tab_id.clone(), s.layout, s.resize_gen, was)
-    };
-
-    if let (Some(id), Some(main)) = (id, app.get_window("main")) {
-        if let (Some(wv), Ok(rect)) = (super::tab_webview(app, &id), compute_rect(&main, layout)) {
-            let scale = main.scale_factor().unwrap_or(1.0);
-
-            let need_oversize = {
-                let mut s = state.lock().unwrap();
-                if was_resizing && !s.oversized {
-                    s.oversized = true;
-                    true
-                } else {
-                    false
-                }
-            };
-            if need_oversize {
-                let (mw, mh) = main
-                    .current_monitor()
-                    .ok()
-                    .flatten()
-                    .map(|m| {
-                        let sz = m.size();
-                        (sz.width as f64 / scale, sz.height as f64 / scale)
-                    })
-                    .unwrap_or((3840.0, 2160.0));
-                let _ = wv.set_bounds(Rect {
-                    position: rect.position,
-                    size: LogicalSize::new(mw, mh).into(),
-                });
-            }
-        }
+    // Do not mutate child HWNDs while handling a native resize/activation
+    // message. Coalesce the burst into one worker, with no oversized surfaces.
+    static PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    app.state::<Mutex<BrowserState>>()
+        .lock()
+        .unwrap()
+        .resize_gen += 1;
+    if PENDING.swap(true, Ordering::SeqCst) {
+        return;
     }
-
-    // The chrome region (window-sized, with the content hole) tracks every
-    // event synchronously — this is what makes resize feel instant.
-    update_ui_region(app);
-
-    // Settle: if no further resize event bumps the generation within 300ms,
-    // apply the real bounds exactly once.
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let state = app2.state::<Mutex<BrowserState>>();
-        {
-            let mut s = state.lock().unwrap();
-            if s.resize_gen != gen {
-                return; // superseded by a newer event
+        loop {
+            let gen = app2
+                .state::<Mutex<BrowserState>>()
+                .lock()
+                .unwrap()
+                .resize_gen;
+            tokio::time::sleep(std::time::Duration::from_millis(32)).await;
+            sync_bounds(&app2);
+            PENDING.store(false, Ordering::SeqCst);
+            let changed = app2
+                .state::<Mutex<BrowserState>>()
+                .lock()
+                .unwrap()
+                .resize_gen
+                != gen;
+            if !changed || PENDING.swap(true, Ordering::SeqCst) {
+                break;
             }
-            s.resizing = false;
-            s.oversized = false;
         }
-        sync_bounds(&app2);
     });
 }
 

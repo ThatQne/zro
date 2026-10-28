@@ -20,35 +20,11 @@ pub async fn set_clipboard_text(text: String) -> Result<(), String> {
 /// Fetches host-side (no CORS / tainted-canvas limits), decodes, and hands
 /// arboard raw RGBA. Handles both remote URLs and inline `data:` images.
 #[tauri::command]
-pub async fn copy_image(url: String) -> Result<(), String> {
-    let bytes: Vec<u8> = if let Some(rest) = url.strip_prefix("data:") {
-        // data:[<mime>][;base64],<payload>
-        use base64::Engine;
-        let comma = rest.find(',').ok_or("malformed data URI")?;
-        let meta = &rest[..comma];
-        let payload = &rest[comma + 1..];
-        if meta.contains("base64") {
-            base64::engine::general_purpose::STANDARD
-                .decode(payload)
-                .map_err(|e| e.to_string())?
-        } else {
-            // percent-encoded text image (rare) — treat bytes as-is
-            payload.as_bytes().to_vec()
-        }
-    } else {
-        let client = reqwest::Client::builder()
-            .user_agent(super::downloads::CHROME_UA)
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("fetch failed (HTTP {})", resp.status()));
-        }
-        resp.bytes().await.map_err(|e| e.to_string())?.to_vec()
-    };
+pub async fn copy_image(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let bytes = super::media::bytes(&app, &url).await?;
 
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        super::media::check_image(&bytes)?;
         let img = image::load_from_memory(&bytes)
             .map_err(|e| e.to_string())?
             .to_rgba8();

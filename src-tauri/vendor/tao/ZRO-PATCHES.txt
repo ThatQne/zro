@@ -1,0 +1,19 @@
+Vendored tao 0.35.2 from crates.io (Apache-2.0, LICENSE included).
+
+Backported upstream PR #1215 (all three published patch commits):
+https://github.com/tauri-apps/tao/pull/1215
+b1280bea29b1e2a8423d08f9d4ebde42bdcde695
+e4d306cd33397372eef829d25a59886d5f540986
+92ff65026f30f554a26eadd4880c47c5ebcfd1bf
+
+Move keyboard/IME PeekMessageW calls before taking KEY_EVENT_BUILDERS,
+WindowState or keyboard-layout locks. Windows can synchronously dispatch
+sent focus messages during PeekMessageW, re-entering the same window procedure.
+
+Confirmed in a live zro hang: the main thread waited in parking_lot::RawMutex,
+with two nested Tao keyboard callbacks separated by KeyEventBuilder's
+PeekMessageW. The original window stopped responding on Alt-Tab.
+
+Only event_loop.rs, keyboard.rs, keyboard_layout.rs and minimal_ime.rs differ
+from the original crate. No OS/window-manager/security settings are changed.
+Keep the compatible Tao API until Tauri upgrades past the affected 0.35 series.

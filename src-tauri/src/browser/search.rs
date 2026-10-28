@@ -71,6 +71,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
 
   var matches = [], curIdx = -1;
   var nativeMode = false, nativeTotal = 0, nativeIndex = 0;
+  var searchGeneration = 0, limited = false;
   function nativeMessage(action, query) {
     try { window.chrome.webview.postMessage(JSON.stringify({type:'zro-find',action:action,query:query||''})); } catch (_) {}
   }
@@ -80,39 +81,39 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     matches = []; curIdx = -1;
   }
   function runFind(q) {
+    var generation = ++searchGeneration;
     clearHL();
+    limited = false;
     nativeMode = false; nativeTotal = 0;
     nativeMessage('stop');
     if (!q) return;
-    var lc = q.toLowerCase(), ranges = [], nodes = textNodes(), i, idx, from;
-    for (i = 0; i < nodes.length && ranges.length < 2000; i++) {
-      var t = nodes[i].nodeValue.toLowerCase(); from = 0;
-      while ((idx = t.indexOf(lc, from)) !== -1) {
-        try {
-          var r = document.createRange();
-          r.setStart(nodes[i], idx); r.setEnd(nodes[i], idx + q.length);
-          // Skip matches that aren't actually rendered — display:none menus,
-          // collapsed panels, off-DOM templates. They inflated the count
-          // ("1/95" when only a few show) and made ↑/↓ land on nothing.
-          var rr = r.getBoundingClientRect();
-          if (rr.width >= 1 || rr.height >= 1) ranges.push(r);
-        } catch (e) {}
-        from = idx + q.length;
-        if (ranges.length >= 2000) break;
+    q = q.slice(0,512);
+    if (window.__zroFindEngine) { nativeMode = true; nativeMessage('start',q); return; }
+    if (!document.body) return;
+    // Compatibility path for older runtimes: bounded, cancelable work slices.
+    // Never collect the entire PDF DOM or force layout for every occurrence.
+    var lc=q.toLowerCase(), ranges=[], visited=0, chars=0, node=null, text='', from=0, exhausted=false;
+    var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+    function batch() {
+      if(generation!==searchGeneration || !open_)return;
+      var deadline=performance.now()+4, idx;
+      while(performance.now()<deadline && ranges.length<250 && visited<20000 && chars<5000000){
+        if(!node){node=walker.nextNode();if(!node){exhausted=true;break;}visited++;
+          var p=node.parentElement;
+          if(!p||p.closest('script,style,noscript,[hidden],#__zroFindHost')){node=null;continue;}
+          text=node.nodeValue.slice(0,65536).toLowerCase();chars+=text.length;from=0;
+        }
+        idx=text.indexOf(lc,from);
+        if(idx<0){node=null;continue;}
+        var r=document.createRange();r.setStart(node,idx);r.setEnd(node,idx+q.length);ranges.push(r);from=idx+q.length;
       }
+      if(!exhausted && ranges.length<250 && visited<20000 && chars<5000000){setTimeout(batch,0);return;}
+      matches=ranges;limited=ranges.length>=250||visited>=20000||chars>=5000000;
+      if(canHL&&ranges.length)CSS.highlights.set(HL,new Highlight(...ranges));
+      if(ranges.length){curIdx=0;focusMatch(false);}else{nativeMode=true;nativeMessage('start',q);}
+      renderCount();
     }
-    matches = ranges;
-    // Fall back to Chromium's engine for text in cross-origin frames/PDFs.
-    if (!ranges.length && q) { nativeMode = true; nativeMessage('start',q); }
-    if (canHL && ranges.length) {
-      var h = new Highlight();
-      for (i = 0; i < ranges.length; i++) h.add(ranges[i]);
-      CSS.highlights.set(HL, h);
-    }
-    // Mark the first match but DON'T scroll — jumping the page while the user
-    // is still typing is the "it shouldn't autoscroll" complaint. Scrolling
-    // only happens on ↑/↓ (step) or clicking a result (jump).
-    if (ranges.length) { curIdx = 0; focusMatch(false); }
+    batch();
   }
   function focusMatch(scroll) {
     if (curIdx < 0 || !matches[curIdx]) return;
@@ -155,7 +156,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
       // templates) — they polluted the results with unreachable entries.
       if (!el.offsetParent && el.tagName !== 'BODY') continue;
       // innerText (not textContent) already excludes hidden descendants.
-      var txt = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      var txt = (el.textContent || '').slice(0,400).replace(/\s+/g, ' ').trim();
       if (!txt || txt.length > 400) { if (txt.length > 400) txt = txt.slice(0, 400); else continue; }
       var tag = el.tagName, role = el.getAttribute && el.getAttribute('role');
       out.push({
@@ -191,7 +192,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
   // result jumps to the exact element (no fragile re-scoring).
   function rankRecords(q, limit) {
     limit = limit || 20;
-    var terms = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+    var terms = String(q || '').slice(0,512).toLowerCase().split(/\s+/).filter(Boolean).slice(0,16);
     if (!terms.length) return [];
     var recs = buildRecords(), scored = [];
     for (var i = 0; i < recs.length; i++) {
@@ -246,6 +247,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     // Trusted Types sites reject innerHTML assignments. Build inert DOM.
     var row = document.createElement('div'); row.className = 'row';
     input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Find on page'; input.spellcheck = false; row.appendChild(input);
+    input.maxLength = 512;
     countEl = document.createElement('span'); countEl.className = 'count'; row.appendChild(countEl);
     [['prev','↑','Previous (Shift+Enter)'],['next','↓','Next (Enter)'],['close','✕','Close (Esc)']].forEach(function (v) {
       var b = document.createElement('button'); b.className = 'btn'; b.setAttribute('data-a',v[0]); b.textContent = v[1]; b.title = v[2]; row.appendChild(b);
@@ -264,13 +266,14 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     input.addEventListener('input', function () {
       clearTimeout(deb);
       var v = input.value;
-      deb = setTimeout(function () { runFind(v); renderResults(v); renderCount(); }, 90);
+      ++searchGeneration;
+      deb = setTimeout(function () { runFind(v); renderCount(); }, 180);
     });
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); if (sel >= 0) jump(sel); else step(e.shiftKey ? -1 : 1); }
       else if (e.key === 'Escape') { e.preventDefault(); close(); }
-      else if (e.key === 'ArrowDown') { e.preventDefault(); moveSel(1); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); moveSel(-1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); step(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); step(-1); }
     });
     document.documentElement.appendChild(host);
 
@@ -280,7 +283,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     function rescan() {
       if (!open_) return;
       var v = input.value;
-      setTimeout(function () { if (open_) { runFind(v); renderResults(v); renderCount(); } }, 300);
+      clearTimeout(deb);deb=setTimeout(function () { if (open_) { runFind(v);renderCount(); } }, 300);
     }
     addEventListener('popstate', rescan);
     addEventListener('hashchange', rescan);
@@ -288,6 +291,7 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
   function renderCount() {
     if (!countEl) return;
     countEl.textContent = nativeMode && nativeTotal ? (nativeIndex+1)+'/'+nativeTotal : matches.length ? (curIdx + 1) + '/' + matches.length : (input.value ? '0/0' : '');
+    if(limited)countEl.textContent+='+';
   }
   function renderResults(q) {
     resultRecs = rankRecords(q, 12); sel = -1; // records keep their live .el
@@ -396,10 +400,11 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
     var q = (window.getSelection && String(window.getSelection())) || '';
     if (q && q.length < 80) { input.value = q.replace(/\s+/g, ' ').trim(); }
     input.focus(); input.select();
-    if (input.value) { runFind(input.value); renderResults(input.value); }
+    if (input.value) { runFind(input.value); }
     renderCount();
   }
   function close() {
+    ++searchGeneration;clearTimeout(deb);
     nativeMessage('stop'); nativeMode = false;
     open_ = false; clearHL();   // clearHL now also clears the jump wash + border
     if (listEl) listEl.replaceChildren();
@@ -421,10 +426,46 @@ pub(crate) const SEARCH_INIT_SCRIPT: &str = r#"
 pub async fn open_find(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(wv) = super::active_webview(&app) {
         let _ = wv.set_focus();
-        wv.eval(format!("{};window.__zroFind.open();", SEARCH_INIT_SCRIPT))
-            .map_err(|e| e.to_string())?;
+        wv.with_webview(|p| unsafe {
+            use windows_core::Interface;
+            if let Ok(core) = p.controller().CoreWebView2() {
+                let supported = core
+                    .cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_28>()
+                    .is_ok();
+                let script = windows_core::HSTRING::from(format!(
+                    "window.__zroFindEngine={supported};{};if(document.contentType==='application/pdf'){{window.chrome.webview.postMessage(JSON.stringify({{type:'zro-find',action:'pdf-open'}}));}}else{{window.__zroFind.open();}}",
+                    SEARCH_INIT_SCRIPT
+                ));
+                let done =
+                    webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+                let _ = core.ExecuteScript(&script, &done);
+            }
+        })
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) unsafe fn configure_native(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_28;
+    use windows_core::Interface;
+    let Ok(find) = core.cast::<ICoreWebView2_28>().and_then(|c| c.Find()) else { return };
+    // Navigation completes asynchronously. Reading the index immediately after
+    // FindNext/Previous reports the old match and makes the arrows look stuck.
+    let c = core.clone();
+    let handler = webview2_com::FindActiveMatchIndexChangedEventHandler::create(Box::new(move |sender, _| {
+        if let Some(find) = sender { update_native_count(&c, &find); }
+        Ok(())
+    }));
+    let mut token = 0;
+    let _ = find.add_ActiveMatchIndexChanged(&handler, &mut token);
+    let c = core.clone();
+    let handler = webview2_com::FindMatchCountChangedEventHandler::create(Box::new(move |sender, _| {
+        if let Some(find) = sender { update_native_count(&c, &find); }
+        Ok(())
+    }));
+    let _ = find.add_MatchCountChanged(&handler, &mut token);
 }
 
 #[cfg(windows)]
@@ -443,6 +484,21 @@ pub(crate) unsafe fn native_message(
         return;
     };
     match value["action"].as_str().unwrap_or("") {
+        "pdf-open" => {
+            // WebView2's programmatic FindNext/Previous has known PDF limits.
+            // Use the PDF viewer's native find controls instead of presenting
+            // custom arrows that cannot navigate its internal document.
+            let options = core.cast::<ICoreWebView2_2>()
+                .and_then(|c| c.Environment())
+                .and_then(|e| e.cast::<ICoreWebView2Environment15>())
+                .and_then(|e| e.CreateFindOptions());
+            if let Ok(options) = options {
+                let _ = options.SetFindTerm(&HSTRING::from(""));
+                let _ = options.SetSuppressDefaultFindDialog(false);
+                let done = webview2_com::FindStartCompletedHandler::create(Box::new(|_| Ok(())));
+                let _ = find.Start(&options, &done);
+            }
+        }
         "stop" => {
             let _ = find.Stop();
         }
@@ -468,7 +524,13 @@ pub(crate) unsafe fn native_message(
                 return;
             };
             let _ = options.SetFindTerm(&HSTRING::from(query));
-            let _ = options.SetShouldHighlightAllMatches(true);
+            // We own the find UI. The default popup is a separate HWND that
+            // steals keyboard focus from our bar/address field, especially
+            // in PDFs. Do not open a second find UI for programmatic searches.
+            let _ = options.SetSuppressDefaultFindDialog(true);
+            // Highlighting every 'e' in a huge PDF is needless paint/memory.
+            // The engine still searches/counts/navigates all occurrences.
+            let _ = options.SetShouldHighlightAllMatches(query.chars().count() >= 3);
             let f = find.clone();
             let c = core.clone();
             let done = webview2_com::FindStartCompletedHandler::create(Box::new(move |result| {

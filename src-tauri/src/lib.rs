@@ -8,26 +8,26 @@ use tauri::{Emitter, Manager};
 
 #[tauri::command]
 fn minimize_window(window: tauri::Window) {
-    window.minimize().unwrap();
+    let _ = window.minimize();
 }
 
 #[tauri::command]
 fn maximize_window(window: tauri::Window) {
     if window.is_maximized().unwrap_or(false) {
-        window.unmaximize().unwrap();
+        let _ = window.unmaximize();
     } else {
-        window.maximize().unwrap();
+        let _ = window.maximize();
     }
 }
 
 #[tauri::command]
 fn close_window(window: tauri::Window) {
-    window.close().unwrap();
+    let _ = window.close();
 }
 
 #[tauri::command]
 fn start_drag(window: tauri::Window) {
-    window.start_dragging().unwrap();
+    let _ = window.start_dragging();
 }
 
 /// Write every panic (message + exact file:line + thread + backtrace) to
@@ -175,7 +175,7 @@ pub fn run() {
             browser::mem_link,
             browser::mem_unlink,
             browser::mem_search,
-            browser::mem_ingest_visit,
+            browser::mem_clear,
             browser::default_browser::set_default_browser,
             browser::default_browser::is_default_browser_registered,
             browser::set_clipboard_text,
@@ -187,7 +187,6 @@ pub fn run() {
             agent::ask_ai,
             agent::cancel_ai,
             agent::set_search_config,
-            agent::index_page,
             agent::get_page_meta,
         ])
         // Native context-menu selections → frontend
@@ -207,6 +206,10 @@ pub fn run() {
             );
         })
         .setup(|app| {
+            let memory_app = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                browser::memory::finish_requested_clear(&memory_app)
+            });
             // Dual-GPU laptops otherwise default WebView2 to the weak
             // integrated GPU — invisible until a WebGL/3D/video-heavy page
             // hits it. One-time registry opt-in, cheap to redo every launch.
@@ -220,10 +223,6 @@ pub fn run() {
             // (a stale build-tree path), repoint it at this installed one.
             #[cfg(windows)]
             browser::default_browser::heal_registration();
-
-            // Must run before the first tab webview is built — it decides the
-            // client-hint brands injected into every page.
-            browser::shields::seed_chrome_version();
 
             // Native resize handler — repositions the single browser webview
             // immediately on every OS resize event, no JS bridge latency
@@ -296,11 +295,7 @@ pub fn run() {
                         // Leave the native focus callback before changing
                         // WebView2 visibility/bounds: those calls can emit
                         // another focus event while the runtime is borrowed.
-                        let app = app_handle.clone();
-                        tauri::async_runtime::spawn(async move {
-                            browser::tabs::on_user_active(&app);
-                            browser::extensions::dismiss_popup_on_outside_click(&app);
-                        });
+                        browser::tabs::queue_activation(&app_handle);
                     }
                     _ => {}
                 }

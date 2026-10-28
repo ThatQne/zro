@@ -30,6 +30,33 @@ pub struct OverlayRect {
 /// Recompute and apply the UI webview's window region:
 /// full window − rounded content hole + overlay rects.
 pub fn update_ui_region(app: &AppHandle) {
+    // Never mutate child HWNDs or synchronously query the runtime from inside
+    // a WebView2/focus callback. One deferred worker consumes the latest state;
+    // bursts of focus/resize/overlay messages do not build an unbounded queue.
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    static REVISION: AtomicU64 = AtomicU64::new(0);
+    REVISION.fetch_add(1, Ordering::SeqCst);
+    if PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let revision = REVISION.load(Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+            update_ui_region_now(&app);
+            PENDING.store(false, Ordering::SeqCst);
+            if REVISION.load(Ordering::SeqCst) == revision
+                || PENDING.swap(true, Ordering::SeqCst)
+            {
+                break;
+            }
+        }
+    });
+}
+
+fn update_ui_region_now(app: &AppHandle) {
     let _timing = super::resources::span("overlay-update");
     let state = app.state::<Mutex<BrowserState>>();
     let (layout, overlays, fullscreen, page_hidden) = {
@@ -137,7 +164,7 @@ fn apply_region(
             RGN_OR,
         };
         use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SetWindowPos, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
         };
 
         let controller = pwv.controller();
@@ -155,7 +182,7 @@ fn apply_region(
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
         );
 
         // Unchanged region → the z-order re-assert above was all we needed

@@ -168,6 +168,23 @@ fn graph_path(app: &AppHandle) -> Option<PathBuf> {
 
 /// Load the graph from disk once, into the managed state.
 pub fn ensure_loaded(app: &AppHandle, g: &mut MemGraph) {
+    if let Some(p) = graph_path(app) {
+        let request = p.with_file_name("memory_clear_requested");
+        if request.is_file() {
+            let backup = p.with_file_name(format!(
+                "memory_graph.before-clear-{}.json",
+                uuid::Uuid::new_v4()
+            ));
+            if (!p.exists() || std::fs::copy(&p, &backup).is_ok())
+                && std::fs::write(&p, b"{\"nodes\":[],\"edges\":[],\"dim\":0}").is_ok()
+            {
+                *g = MemGraph::default();
+                g.loaded = true;
+                let _ = std::fs::remove_file(request);
+                return;
+            }
+        }
+    }
     if g.loaded {
         return;
     }
@@ -179,6 +196,14 @@ pub fn ensure_loaded(app: &AppHandle, g: &mut MemGraph) {
                 g.edges = loaded.edges;
                 g.dim = loaded.dim;
             }
+        }
+    }
+}
+
+pub(crate) fn finish_requested_clear(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Mutex<MemGraph>>() {
+        if let Ok(mut g) = state.lock() {
+            ensure_loaded(app, &mut g);
         }
     }
 }
@@ -578,6 +603,24 @@ fn node_view(n: &MemNode) -> serde_json::Value {
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn mem_clear(
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<MemGraph>>,
+) -> Result<(), String> {
+    {
+        let mut g = state.lock().map_err(|e| e.to_string())?;
+        *g = MemGraph::default();
+        g.loaded = true;
+        save(&app, &g);
+    }
+    if let Some(memory) = app.try_state::<Mutex<crate::agent::semantic::SemanticMemory>>() {
+        *memory.lock().map_err(|e| e.to_string())? = Default::default();
+    }
+    let _ = app.emit("zro:mem-changed", ());
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn mem_list(

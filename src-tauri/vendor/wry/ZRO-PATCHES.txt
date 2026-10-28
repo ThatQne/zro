@@ -1,0 +1,19 @@
+Vendored wry 0.55.1 from crates.io (Apache-2.0 OR MIT).
+The original license files are included alongside the original source.
+
+Local change: src/webview2/mod.rs attach_ipc_handler guards Request::builder()
+failure instead of unwrapping. Backport of upstream PR #1772:
+https://github.com/tauri-apps/wry/pull/1772
+Original issue: https://github.com/tauri-apps/wry/issues/1255
+
+This matches crashes recorded in zro's native panic log. Dropping malformed
+IPC must not stop other WebMessageReceived handlers or native page rendering.
+Do not parse an invalid source as a trusted fallback origin (IPC security).
+Remove this patch when the compatible Tauri runtime includes the upstream fix.
+
+Local compatibility change: the window.ipc property is configurable, permitting
+a site's top-level lexical `let ipc` binding to coexist with explicit
+window.ipc.postMessage. A real authenticated Google Sheets core script failed
+with "Identifier 'ipc' has already been declared" under the original descriptor.
+This does not change Tauri command permissions, origins or the native handler.
+Native fixture tests cover lexical coexistence AND delivery through the bridge.

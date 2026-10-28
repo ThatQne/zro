@@ -174,6 +174,7 @@ export default function MemoryPanel({ onClose }: { onClose: () => void }) {
           <span style={{ fontSize: 10, color: "#3a3a3a", marginLeft: 4 }}>{nodes.length} nodes · {edges.length} links</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <button title="Clear all Memory (manual saves only; browsing history is separate)" onClick={async()=>{if(confirm('Clear every Memory entry and its links?')){await useMemoryStore.getState().clear();setSel(null);}}} style={{background:"none",border:0,color:"#888",cursor:"pointer",display:"flex",padding:5}}><Trash2 size={13}/></button>
           <SegBtn active={view === "list"} onClick={() => setView("list")}><List size={13} /></SegBtn>
           <SegBtn active={view === "graph"} onClick={() => setView("graph")}><Network size={13} /></SegBtn>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#444", display: "flex", marginLeft: 4 }}><X size={13} /></button>

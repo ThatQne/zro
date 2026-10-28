@@ -782,22 +782,7 @@ export const useBrowserStore = create<BrowserStore>()(
             .filter((h) => !(h.url === entry.url && h.visitedAt > cutoff));
           return { history: [entry, ...recent, ...s.history.slice(50)].slice(0, 5000) };
         });
-        // The memory graph is built from actual browsing, not only things the
-        // user manually saves. The backend dedupes canonical URLs and links
-        // the visit into its browsing trail; callers already exclude
-        // incognito tabs before reaching this action.
-        // History is exhaustive; Memory is deliberate. Only retain a page
-        // after a dwell period, never background/preloaded/throwaway pages.
-        const active = get().tabs.find(t => t.id === get().activeTabId);
-        if (active?.url === entry.url && !active.incognito) {
-          const id = active.id;
-          setTimeout(() => {
-            const s = get(), current = s.tabs.find(t => t.id === id);
-            if (!document.hidden && s.activeTabId === id && current?.url === entry.url && !current.incognito && !current.isLoading) {
-              invoke("mem_ingest_visit", { url: entry.url, title: current.title }).catch(() => {});
-            }
-          }, 20_000);
-        }
+        // Browsing history is not Memory. Only explicit saves create nodes.
       },
       removeHistory: (visitedAt, url) =>
         set((s) => ({
@@ -827,20 +812,6 @@ export const useBrowserStore = create<BrowserStore>()(
           // Real title + real favicon straight from the page (any tab)
           refreshMeta(id);
 
-          // AI semantic memory (no-op if Ollama down) - active tab only.
-          // Deferred: reading innerText forces a full layout pass, so never
-          // do it in the same beat as first paint.
-          const loadedTab = get().tabs.find((t) => t.id === id);
-          if (get().activeTabId === id && !loadedTab?.incognito) {
-            setTimeout(() => {
-              const s = get();
-              const current = s.tabs.find(t => t.id === id);
-              if (!document.hidden && s.memoryPressure === "normal" && s.activeTabId === id &&
-                  current?.url === url && !current.incognito && !s.tabs.some(t => t.isLoading)) {
-                invoke("index_page", { url, id }).catch(() => {});
-              }
-            }, 20_000);
-          }
         });
 
         const unsubLoading = await listen<{ id: string }>("page-loading", (e) => {

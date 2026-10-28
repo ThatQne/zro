@@ -50,7 +50,7 @@ test('blocks rejects movement after game over and keeps live methods on hydratio
 });
 
 test('miner has clear item progression, upgrades and achievement multipliers', () => {
-  const game = factory(); assert.equal(minerItems.length, 10); assert.equal(minerUpgrades.length, 10); assert.equal(achievementDefs.length, 15);
+  const game = factory(); assert.equal(minerItems.length, 15); assert.equal(minerUpgrades.length, 15); assert.equal(achievementDefs.length, 15);
   const unlocked = game.tap(); assert.ok(unlocked.includes('first')); assert.equal(game.achievements.length, 1);
   game.energy = game.total = 1000;
   assert.equal(game.buy(0), true); assert.equal(game.items[0], 1);
@@ -96,7 +96,7 @@ test('hold can be used once per piece and persists through snapshots', () => {
 
 test('miner migrates five-item saves and reboots only earned run production', () => {
   const s=factory({items:[4,3,2,1,1],energy:1e8,total:1e8});
-  assert.equal(s.items.length,10);assert.ok(Number.isFinite(s.rate()));
+  assert.equal(s.items.length,15);assert.ok(Number.isFinite(s.rate()));
   assert.equal(s.reboot(),true);assert.equal(s.shards,1);assert.equal(s.total,0);assert.equal(s.reboot(),false);
   assert.equal(s.buyResearch(),true);assert.equal(s.shards,0);assert.equal(s.research,1);
   const restored=factory(JSON.parse(JSON.stringify(s)));assert.equal(restored.research,1);assert.equal(restored.reboots,1);
@@ -108,4 +108,23 @@ test('Breakout loses lives, advances waves, and restores without resetting progr
   s.bricks=[];s.launch();s.step(1/120);assert.equal(s.wave,2);assert.equal(s.lives,3);assert.equal(s.bricks.length,35);
   s.score=123;const restored=breakout(JSON.parse(JSON.stringify(s)));assert.equal(restored.score,123);assert.equal(restored.wave,2);
   s.lives=1;s.launch();s.ball.y=540;s.step(1/120);assert.equal(s.over,true);s.launch();assert.equal(s.launched,false);
+});
+
+test('snake rejects reversal, grows, detects walls, and restores the trail',()=>{
+  const {snake}=context.module.exports,s=snake();
+  assert.equal(s.turn(-1,0),false);assert.equal(s.turn(0,-1),true);assert.equal(s.turn(0,1),false);
+  for(let i=0;i<4;i++)s.step(.05);assert.equal(s.body[0].y,11);
+  s.food={x:10,y:10};for(let i=0;i<4;i++)s.step(.05);assert.equal(s.score,1);assert.equal(s.body.length,4);
+  const restored=snake(JSON.parse(JSON.stringify(s)));assert.equal(JSON.stringify(restored.body),JSON.stringify(s.body));
+  for(let i=0;i<100;i++)restored.step(.05);assert.equal(restored.over,true);
+});
+
+test('miner research prerequisites and artifact progression survive reboot',()=>{
+  const s=factory({energy:1e20,total:1e20,shards:100});
+  assert.equal(s.unlockResearch('fusion'),false);assert.equal(s.unlockResearch('scheduler'),true);
+  assert.equal(s.unlockResearch('parallel'),true);assert.equal(s.unlockResearch('parallel'),false);
+  const before=s.rate();s.items[0]=1;assert.ok(s.rate()>before);
+  assert.equal(s.explore(),'Signal chip');assert.equal(s.artifacts[0],1);assert.equal(s.expeditions,1);
+  s.reboot();assert.equal(s.artifacts[0],1);assert.ok(s.tree.includes('parallel'));
+  const restored=factory(JSON.parse(JSON.stringify(s)));assert.equal(restored.expeditions,1);assert.equal(restored.tree.length,2);
 });
